@@ -26,7 +26,6 @@ class DiTBlock(nnx.Module):
             bias=config.use_bias,
             dtype=dtype,
             param_dtype=param_dtype,
-            use_cache=False,
             key=rngs.params()
         )
         
@@ -47,7 +46,8 @@ class DiTBlock(nnx.Module):
         norm_x, shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.norm1(x, c)
         
         # Self-attention branch (incorporate scaling and shifting directly in skip-connection space)
-        x = x + gate_msa * self.attn(norm_x * (1 + scale_msa) + shift_msa)
+        attn_out, _ = self.attn(norm_x * (1 + scale_msa) + shift_msa)
+        x = x + gate_msa * attn_out
         
         # MLP branch
         norm_x2 = self.norm2(x)

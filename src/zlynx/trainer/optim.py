@@ -31,8 +31,11 @@ class GaloreState(NamedTuple):
 def galore_wrapper(inner_opt: optax.GradientTransformation, r: int = 128, update_proj_gap: int = 200, scale: float = 1.0):
     """
     Wraps an Optax optimizer to apply Gradient Low-Rank Projection (GaLore).
-    This reduces the memory footprint of optimizer states (like Adam's moments) 
+    This reduces the memory footprint of optimizer states (like Adam's moments)
     by projecting gradients into a low-rank subspace.
+
+    The SVD-based projector update runs outside JIT via `update_galore_projectors()`.
+    The optimizer's update_fn only does the cheap project → inner opt → project back.
     """
     def init_fn(params):
         def _get_lr_shape(p):
@@ -40,10 +43,10 @@ def galore_wrapper(inner_opt: optax.GradientTransformation, r: int = 128, update
                 return p
             m, n = p.shape
             return jnp.zeros((m, r) if m < n else (r, n), dtype=p.dtype)
-            
+
         low_rank_params = jax.tree_util.tree_map(_get_lr_shape, params)
         inner_state = inner_opt.init(low_rank_params)
-        
+
         def _init_proj(p):
             if p.ndim < 2 or min(p.shape) <= r:
                 return None
@@ -52,106 +55,133 @@ def galore_wrapper(inner_opt: optax.GradientTransformation, r: int = 128, update
                 return jnp.zeros((n, r), dtype=p.dtype)
             else:
                 return jnp.zeros((m, r), dtype=p.dtype)
-            
+
         projector = jax.tree_util.tree_map(_init_proj, params)
         return GaloreState(inner_state=inner_state, projector=projector, step=jnp.array(0, dtype=jnp.int32))
 
     def update_fn(updates, state, params=None):
-        step = state.step
-        is_update_step = (step % update_proj_gap) == 0
-
-        class Packed:
-            def __init__(self, u, p):
-                self.u = u; self.p = p
-
-        def process_tensor(update, param, proj):
+        # Project gradients down using current projectors (no SVD here)
+        def _project_down(update, param, proj):
             if proj is None:
-                return Packed(update, proj)
-                
+                return update
             m, n = param.shape
-            is_right = (m < n)
-            
-            def compute_new_proj():
-                # SVD on float32 for stability
-                U, S, Vh = jnp.linalg.svd(update.astype(jnp.float32), full_matrices=False)
-                if is_right:
-                    # Vh top r rows are (r, n). Transpose is (n, r).
-                    return Vh[:r, :].T.astype(update.dtype)
-                else:
-                    # U top r cols are (m, r).
-                    return U[:, :r].astype(update.dtype)
-                    
-            new_proj = jax.lax.cond(
-                is_update_step,
-                compute_new_proj,
-                lambda: proj
-            )
-            
-            if is_right:
-                # right projection: G @ P -> (m, r)
-                low_rank_update = jnp.dot(update, new_proj)
+            if m < n:
+                return jnp.dot(update, proj)    # (m, r)
             else:
-                # left projection: Q^T @ G -> (r, n)
-                low_rank_update = jnp.dot(new_proj.T, update)
-                
-            return Packed(low_rank_update, new_proj)
+                return jnp.dot(proj.T, update)  # (r, n)
 
-        packed_tree = jax.tree_util.tree_map(
-            process_tensor, updates, params, state.projector,
+        low_rank_updates = jax.tree_util.tree_map(
+            _project_down, updates, params, state.projector,
             is_leaf=lambda x: x is None
         )
-        
-        low_rank_updates = jax.tree_util.tree_map(
-            lambda x: x.u, packed_tree, 
-            is_leaf=lambda x: isinstance(x, Packed) or x is None
-        )
-        new_projectors = jax.tree_util.tree_map(
-            lambda x: x.p, packed_tree, 
-            is_leaf=lambda x: isinstance(x, Packed) or x is None
-        )
-        
+
+        # Project params down for inner optimizer
         def _get_lr_params(orig_p, proj):
             if proj is None or orig_p is None: return orig_p
             m, n = orig_p.shape
-            is_right = (m < n)
-            
-            if is_right: 
+            if m < n:
                 return jnp.dot(orig_p, proj)
             else:
                 return jnp.dot(proj.T, orig_p)
-                
-        # Also need is_leaf for None projectors
+
         lr_params = jax.tree_util.tree_map(
-            _get_lr_params, params, new_projectors, 
+            _get_lr_params, params, state.projector,
             is_leaf=lambda x: x is None
         ) if params is not None else None
-        
+
+        # Inner optimizer step in low-rank space
         inner_updates_lr, new_inner_state = inner_opt.update(low_rank_updates, state.inner_state, lr_params)
-        
+
+        # Project updates back to full rank
         def _project_up(inner_u, orig_p, proj):
             if proj is None: return inner_u * scale
             m, n = orig_p.shape
-            is_right = (m < n)
-            
-            if is_right:
-                # is_right -> inner_u was (m, r). proj is (n, r).
-                # inner_u @ proj^T -> (m, n)
-                full_u = jnp.dot(inner_u, proj.T)
+            if m < n:
+                return jnp.dot(inner_u, proj.T) * scale
             else:
-                # left proj -> inner_u was (r, n). proj is (m, r).
-                # proj @ inner_u -> (m, n)
-                full_u = jnp.dot(proj, inner_u)
-                
-            return full_u * scale
-            
+                return jnp.dot(proj, inner_u) * scale
+
         final_updates = jax.tree_util.tree_map(
-            _project_up, inner_updates_lr, params, new_projectors,
+            _project_up, inner_updates_lr, params, state.projector,
             is_leaf=lambda x: x is None
         )
-        
-        return final_updates, GaloreState(inner_state=new_inner_state, projector=new_projectors, step=step + 1)
+
+        return final_updates, GaloreState(
+            inner_state=new_inner_state,
+            projector=state.projector,
+            step=state.step + 1,
+        )
 
     return optax.GradientTransformation(init_fn, update_fn)
+
+
+def update_galore_projectors(galore_state, grads, params, r: int = 128):
+    """Update GaLore projectors via SVD. Call from Python every `update_proj_gap` steps.
+
+    This runs outside JIT — SVD is computed eagerly on device, avoiding the
+    catastrophic XLA compilation cost of tracing SVD for every parameter.
+
+    Args:
+        galore_state: The GaloreState from the optimizer.
+        grads: The current gradient pytree (same structure as params).
+        params: The current parameter pytree.
+        r: Projection rank (must match the rank used in galore_wrapper).
+
+    Returns:
+        Updated GaloreState with new projectors.
+    """
+    # Flatten to raw arrays to avoid pytree structure mismatch between
+    # nnx variable types (Param, OptVariable, etc.)
+    grad_leaves = jax.tree_util.tree_leaves(grads)
+    param_leaves = jax.tree_util.tree_leaves(params)
+    proj_flat, proj_treedef = jax.tree_util.tree_flatten(
+        galore_state.projector, is_leaf=lambda x: x is None
+    )
+
+    new_proj_flat = []
+    gi = 0  # grad/param index (only count leaves that have a projector)
+    for proj in proj_flat:
+        if proj is None:
+            new_proj_flat.append(None)
+            gi += 1
+            continue
+        grad = grad_leaves[gi]
+        param = param_leaves[gi]
+        gi += 1
+        m, n = param.shape
+        U, S, Vh = jnp.linalg.svd(grad.astype(jnp.float32), full_matrices=False)
+        if m < n:
+            new_proj_flat.append(Vh[:r, :].T.astype(grad.dtype))
+        else:
+            new_proj_flat.append(U[:, :r].astype(grad.dtype))
+
+    new_projectors = proj_treedef.unflatten(new_proj_flat)
+
+    return GaloreState(
+        inner_state=galore_state.inner_state,
+        projector=new_projectors,
+        step=galore_state.step,
+    )
+
+
+def find_galore_state(opt_state):
+    """Find GaloreState index in an optax chain. Returns (index, state) or (None, state)."""
+    if isinstance(opt_state, GaloreState):
+        return None, opt_state
+    if isinstance(opt_state, tuple):
+        for i, s in enumerate(opt_state):
+            if isinstance(s, GaloreState):
+                return i, s
+    return None, None
+
+
+def set_galore_state(opt_state, idx, new_gstate):
+    """Replace GaloreState in an optax chain."""
+    if idx is None:
+        return new_gstate
+    new_state = list(opt_state)
+    new_state[idx] = new_gstate
+    return tuple(new_state)
 
 
 def build_optimizer(trconfig: "TrainerConfig", total_steps: int):

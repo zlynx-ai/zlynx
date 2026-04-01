@@ -59,8 +59,8 @@ def sample_token(
 
 
 @nnx.jit
-def _forward_step(model, input_ids, attention_mask, position_ids):
-    return model(input_ids, attention_mask, position_ids)
+def _decode_step(model, input_ids, attention_mask, position_ids, past_key_values):
+    return model(input_ids, attention_mask, position_ids, past_key_values=past_key_values)
 
 
 class LanguageModel:
@@ -68,19 +68,14 @@ class LanguageModel:
         self.kwargs = kwargs
         self.config = kwargs.get("config", None)
 
-    def init_cache(self, batch_size: int, max_seq_len: int):
-        from ..modules.cache import KVCache
-
-        for _, module in nnx.iter_modules(self):
-            if isinstance(module, KVCache):
-                module.init_cache_state(batch_size, max_seq_len)
-
     def generate(
         self,
         input_ids: jax.Array,
         attention_mask: jax.Array = None,
         key: jax.Array | None = None,
         max_new_tokens: int = 64,
+        ctxlen: int = 2048,
+        batch: int | None = None,
         temperature: float = 1.0,
         top_p: float = 1.0,
         top_k: int = 50,
@@ -89,67 +84,64 @@ class LanguageModel:
         suppress_tokens: list[int] | None = None,
     ):
         B, S = input_ids.shape
-        max_len = S + max_new_tokens
+        if batch is None:
+            batch = B
 
         cfg = getattr(self, "config", getattr(self, "kwargs", {}).get("config", None))
-        use_cache = True if cfg is None else getattr(cfg, "use_cache", True)
-
-        # Enforce use_cache on submodules that possess the boolean attribute
-        for _, module in nnx.iter_modules(self):
-            if hasattr(module, "use_cache"):
-                module.use_cache = use_cache
 
         if attention_mask is None:
-            attention_mask = jnp.ones((B, S), dtype=jnp.bool_)
+            attention_mask = jnp.ones((batch, S), dtype=jnp.bool_)
         else:
             attention_mask = attention_mask.astype(jnp.bool_)
-
-        if hasattr(self, "init_cache") and use_cache:
-            self.init_cache(B, max_len)
 
         if key is None:
             temperature = 0.0
             key = jax.random.key(0)
 
-        out_ids = jnp.zeros((B, max_len), dtype=jnp.int32)
+        # Init past key values: list of (k_cache, v_cache, cache_index) per layer
+        num_layers = cfg.num_hidden_layers
+        kv_head = cfg.kv_head if cfg.kv_head else cfg.attention_head
+        head_dim = cfg.head_dim
+        from ..utils import get_dtype
+        cache_dtype = get_dtype(cfg.dtype) if cfg.dtype else jnp.bfloat16
+
+        cache_index = jnp.int32(0)
+        past_key_values = [
+            (
+                jnp.zeros((batch, ctxlen, kv_head, head_dim), dtype=cache_dtype),
+                jnp.zeros((batch, ctxlen, kv_head, head_dim), dtype=cache_dtype),
+                cache_index,
+            )
+            for _ in range(num_layers)
+        ]
+
+        out_ids = jnp.zeros((batch, ctxlen), dtype=jnp.int32)
         out_ids = out_ids.at[:, :S].set(input_ids.astype(jnp.int32))
-        out_mask = jnp.zeros((B, max_len), dtype=jnp.bool_)
+        out_mask = jnp.zeros((batch, ctxlen), dtype=jnp.bool_)
         out_mask = out_mask.at[:, :S].set(attention_mask)
 
-        finished = jnp.zeros((B,), dtype=jnp.bool_)
+        finished = jnp.zeros((batch,), dtype=jnp.bool_)
 
-        # Prefill on prompt
-        prompt_position_ids = jnp.cumsum(attention_mask.astype(jnp.int32), axis=-1) - 1
-        prompt_position_ids = jnp.maximum(prompt_position_ids, 0)
-        outputs = _forward_step(self, input_ids, attention_mask, prompt_position_ids)
-        last_logit = outputs.logits[:, -1, :]  # shape (B, V)
-
-        # Build suppress mask (tokens that should never be sampled)
+        # Build suppress mask
+        suppress_mask = None
         if suppress_tokens:
-            suppress_mask = jnp.zeros(last_logit.shape[-1], dtype=jnp.bool_)
+            vocab_size = cfg.vocab_size
+            suppress_mask = jnp.zeros(vocab_size, dtype=jnp.bool_)
             for t in suppress_tokens:
                 suppress_mask = suppress_mask.at[t].set(True)
-        else:
-            suppress_mask = None
-            
-        # Split the model into its GraphDef (structure) and dynamic Pytree State
-        graphdef, model_state = nnx.split(self)
 
-        # Define the while loop condition
-        def cond_fn(loop_state):
-            i, out_ids, out_mask, finished, last_logit, suppress_mask_state, key, _ = loop_state
-            not_done = i < max_new_tokens
-            if eos_token_id is not None:
-                not_done = not_done & (~jnp.all(finished))
-            return not_done
+        # ── Prefill: direct call (no JIT) to populate past key values ──
+        prompt_position_ids = jnp.cumsum(attention_mask.astype(jnp.int32), axis=-1) - 1
+        prompt_position_ids = jnp.maximum(prompt_position_ids, 0)
+        outputs = self(input_ids, attention_mask, prompt_position_ids, past_key_values=past_key_values)
+        past_key_values = outputs.past_key_values
+        last_logit = outputs.logits[:, -1, :]
 
-        # Define the while loop body (Must be purely functional)
-        def body_fn(loop_state):
-            i, out_ids, out_mask, finished, last_logit, suppress_mask_state, key, current_model_state = loop_state
-            
+        # ── Decode: JIT-compiled steps with past key values ──
+        for i in range(max_new_tokens):
             cur_logit = last_logit
-            if suppress_mask_state is not None:
-                cur_logit = jnp.where(suppress_mask_state, -1e9, cur_logit)
+            if suppress_mask is not None:
+                cur_logit = jnp.where(suppress_mask, -1e9, cur_logit)
 
             next_token, key = sample_token(
                 cur_logit, out_ids, out_mask,
@@ -159,51 +151,21 @@ class LanguageModel:
             if eos_token_id is not None:
                 next_token = jnp.where(finished, eos_token_id, next_token)
                 finished = finished | (next_token == eos_token_id)
-
-            next_token_2d = jnp.expand_dims(next_token.astype(jnp.int32), axis=1)
+                if jnp.all(finished):
+                    out_ids = out_ids.at[:, S + i].set(next_token.astype(jnp.int32))
+                    break
 
             out_ids = out_ids.at[:, S + i].set(next_token.astype(jnp.int32))
             out_mask = out_mask.at[:, S + i].set(True)
 
-            indices = jnp.arange(max_len)
-            valid_mask = indices <= (S + i)
-            static_mask = out_mask & valid_mask
+            next_token_2d = jnp.expand_dims(next_token.astype(jnp.int32), axis=1)
+            decode_pos = jnp.expand_dims(
+                jnp.sum(out_mask.astype(jnp.int32), axis=-1) - 1, axis=-1
+            )
 
-            # We must reconstruct the model purely for this step's forward pass
-            # This creates a temporary view of the model tied to `current_model_state`
-            temp_model = nnx.merge(graphdef, current_model_state)
-
-            if use_cache:
-                decode_pos = jnp.expand_dims(
-                    jnp.sum(static_mask.astype(jnp.int32), axis=-1) - 1, axis=-1
-                )
-                outputs = _forward_step(temp_model, next_token_2d, static_mask, decode_pos)
-                last_logit = outputs.logits[:, -1, :]
-            else:
-                cur_pos = jnp.cumsum(static_mask.astype(jnp.int32), axis=-1) - 1
-                cur_pos = jnp.maximum(cur_pos, 0)
-                outputs = _forward_step(temp_model, out_ids, static_mask, cur_pos)
-                last_logit = jax.lax.dynamic_slice(
-                    outputs.logits, (0, S + i, 0), (B, 1, outputs.logits.shape[-1])
-                )[:, 0, :]
-                
-            # Split the temporary model back out to capture any updated KV cache states
-            _, next_model_state = nnx.split(temp_model)
-                
-            return (i + 1, out_ids, out_mask, finished, last_logit, suppress_mask_state, key, next_model_state)
-
-        # Execute loop (pure compilation over PyTrees)
-        @jax.jit
-        def _execute_loop(init_loop_state):
-            return jax.lax.while_loop(cond_fn, body_fn, init_loop_state)
-            
-        init_loop_state = (jnp.int32(0), out_ids, out_mask, finished, last_logit, suppress_mask, key, model_state)
-        final_loop_state = _execute_loop(init_loop_state)
-        
-        _, out_ids, _, _, _, _, _, final_model_state = final_loop_state
-        
-        # Update our actual object instance with any state changes (like cache index increments)
-        nnx.update(self, final_model_state)
+            outputs = _decode_step(self, next_token_2d, out_mask, decode_pos, past_key_values)
+            past_key_values = outputs.past_key_values
+            last_logit = outputs.logits[:, -1, :]
 
         return out_ids
 

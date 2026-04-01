@@ -3,58 +3,52 @@
 import jax, jax.numpy as jnp
 from flax import nnx
 
-from .cache import KVCache
 from .rope import apply_rope
 
 class Attention(nnx.Module):
     def __init__(
-        self, key, 
-        hidden_size: int, 
-        attention_head: int, 
-        head_dim: int, 
-        kv_head: int | None = None, 
-        bias: bool = False, 
+        self, key,
+        hidden_size: int,
+        attention_head: int,
+        head_dim: int,
+        kv_head: int | None = None,
+        bias: bool = False,
         layer_idx: int | None = None,
         dtype=jnp.bfloat16,
         param_dtype=jnp.float32,
-        use_cache: bool = True
     ):
         super().__init__()
         self.layer_idx = layer_idx
         self.dtype = dtype
-        
+
         self.attention_head = attention_head
         kv_head = kv_head if kv_head is not None else attention_head
         self.head_dim = head_dim
         self.kv_head = kv_head
 
-        # Functionally encapsulate KV Cache state
-        self.use_cache = use_cache
-        self.kv_cache = KVCache(kv_head=self.kv_head, head_dim=self.head_dim, dtype=self.dtype)
-
         q_key, k_key, v_key, o_key = jax.random.split(key, 4)
         self.q_proj = nnx.Linear(
-            hidden_size, 
+            hidden_size,
             attention_head * head_dim,
-            use_bias=bias, 
-            dtype=dtype, 
-            param_dtype=param_dtype, 
+            use_bias=bias,
+            dtype=dtype,
+            param_dtype=param_dtype,
             rngs=nnx.Rngs(q_key)
         )
         self.k_proj = nnx.Linear(
-            hidden_size, 
+            hidden_size,
             kv_head * head_dim,
-            use_bias=bias, 
-            dtype=dtype, 
-            param_dtype=param_dtype, 
+            use_bias=bias,
+            dtype=dtype,
+            param_dtype=param_dtype,
             rngs=nnx.Rngs(k_key)
         )
         self.v_proj = nnx.Linear(
-            hidden_size, 
+            hidden_size,
             kv_head * head_dim,
-            use_bias=bias, 
-            dtype=dtype, 
-            param_dtype=param_dtype, 
+            use_bias=bias,
+            dtype=dtype,
+            param_dtype=param_dtype,
             rngs=nnx.Rngs(v_key)
         )
         self.o_proj = nnx.Linear(
@@ -62,16 +56,17 @@ class Attention(nnx.Module):
             attention_head * head_dim \
                 if attention_head >= kv_head else kv_head * head_dim,  # MQA
             hidden_size,
-            use_bias=bias, 
-            dtype=dtype, 
-            param_dtype=param_dtype, 
+            use_bias=bias,
+            dtype=dtype,
+            param_dtype=param_dtype,
             rngs=nnx.Rngs(o_key)
         )
 
     def __call__(
-        self, hidden_states: jax.Array, 
-        attention_mask: jax.Array | None = None, 
-        position_embedding: tuple[jax.Array] | None = None
+        self, hidden_states: jax.Array,
+        attention_mask: jax.Array | None = None,
+        position_embedding: tuple[jax.Array] | None = None,
+        past_key_value: tuple | None = None,
     ):
         input_shape = hidden_states.shape[:-1]
         query = self.q_proj(hidden_states).reshape(*hidden_states.shape[:-1], -1, self.head_dim)
@@ -82,8 +77,19 @@ class Attention(nnx.Module):
             cos, sin = position_embedding
             query, key = apply_rope(query, key, cos, sin)
 
-        if self.use_cache:
-            key, value = self.kv_cache.update_cache(key, value)
+        present_key_value = None
+        if past_key_value is not None:
+            k_cache, v_cache, cache_index = past_key_value
+            S = key.shape[1]
+            k_cache = jax.lax.dynamic_update_slice(
+                k_cache, key.astype(k_cache.dtype), (0, cache_index, 0, 0)
+            )
+            v_cache = jax.lax.dynamic_update_slice(
+                v_cache, value.astype(v_cache.dtype), (0, cache_index, 0, 0)
+            )
+            key = k_cache
+            value = v_cache
+            present_key_value = (k_cache, v_cache, cache_index + S)
 
         # GQA: repeat KV heads to match query heads
         if self.attention_head > self.kv_head:
@@ -100,4 +106,4 @@ class Attention(nnx.Module):
         )
 
         hidden_states = hidden_states.reshape(*input_shape, -1)
-        return self.o_proj(hidden_states)
+        return self.o_proj(hidden_states), present_key_value

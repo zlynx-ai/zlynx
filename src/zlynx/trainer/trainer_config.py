@@ -32,7 +32,7 @@ class DatasetConfig:
 @dataclass
 class TrainerConfig:
     # ── batch / accumulation ──
-    batch_size: int = 8
+    batch_size: int = 1
     gradient_accumulation_steps: int = 1  # effective batch = batch_size × this
 
     # ── optimizer ──
@@ -54,6 +54,7 @@ class TrainerConfig:
     # ── precision ──
     dtype: str = "bfloat16"                      # param / compute dtype
     grad_dtype: str | None = None                # gradient dtype (None = same as dtype)
+    gradient_checkpointing: bool = False         # recompute activations to save memory (jax.remat)
 
     # ── sharding / parallelism ──
     sharding: str | int | bool | None = "auto"     # "auto", None (skip), "fsdp", "tp", "dp", int (device ID), False (single)

@@ -16,8 +16,8 @@ from .loss_fn import (
     grpo_loss_fn, dpo_loss_fn, 
     token_log_probs, diffusion_loss
 )
-from .utils import process_model, process_dataset, Logger
-from .optim import build_optimizer
+from .utils import process_model, process_dataset, Logger, _apply_checkpointing
+from .optim import build_optimizer, find_galore_state, set_galore_state, update_galore_projectors
 
 
 # ─────────────────────────────────────────────────────────────
@@ -57,6 +57,7 @@ class Trainer:
         )
 
         self.model = process_model(model, self.trconfig)
+        self.model = _apply_checkpointing(self.model, self.trconfig)
 
     def train(self):
         """Run the full training loop.
@@ -99,6 +100,12 @@ class Trainer:
         # ── logger ──
         logger = Logger(cfg.log_to, cfg.output_dir, cfg.run_name)
 
+        # ── detect GaLore for projector updates ──
+        galore_idx, galore_st = find_galore_state(optimizer.opt_state)
+        is_galore = galore_st is not None
+        galore_gap = cfg.optimizer_kwargs.get("galore_update_proj_gap", 200) if is_galore else 0
+        galore_r = cfg.optimizer_kwargs.get("galore_r", 128) if is_galore else 0
+
         # ── training loop ──
         global_step = 0
         micro_step = 0
@@ -118,7 +125,7 @@ class Trainer:
                     accum_grads = grads
                 else:
                     accum_grads = jax.tree.map(jnp.add, accum_grads, grads)
-                accum_loss += loss.item()
+                accum_loss = accum_loss + loss
 
                 # ── update when accumulation is complete ──
                 if micro_step % cfg.gradient_accumulation_steps == 0:
@@ -128,10 +135,18 @@ class Trainer:
                             lambda g: g / cfg.gradient_accumulation_steps, accum_grads
                         )
 
+                    # ── GaLore projector update (outside JIT) ──
+                    if is_galore and global_step % galore_gap == 0:
+                        params = nnx.state(self.model, nnx.Param)
+                        cur_gstate = galore_st if galore_idx is None else optimizer.opt_state[galore_idx]
+                        new_gstate = update_galore_projectors(cur_gstate, accum_grads, params, r=galore_r)
+                        optimizer.opt_state = set_galore_state(optimizer.opt_state, galore_idx, new_gstate)
+                        galore_st = new_gstate
+
                     optimizer.update(self.model, accum_grads)
                     accum_grads = None
                     global_step += 1
-                    avg_micro_loss = accum_loss / cfg.gradient_accumulation_steps
+                    avg_micro_loss = float(accum_loss) / cfg.gradient_accumulation_steps
                     log_loss += avg_micro_loss
                     accum_loss = 0.0
 

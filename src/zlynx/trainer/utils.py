@@ -27,8 +27,25 @@ def param_bytes(model, dtype=jnp.float32) -> int:
     return count_params(model) * jnp.dtype(dtype).itemsize
 
 
+def apply_gradient_checkpointing(model):
+    """Wrap transformer block __call__ methods with jax.checkpoint (remat)
+    to recompute activations during backward instead of storing them."""
+    if hasattr(model, "model") and hasattr(model.model, "blocks"):
+        blocks = model.model.blocks
+    elif hasattr(model, "blocks"):
+        blocks = model.blocks
+    else:
+        return model
+
+    for block in blocks:
+        original_call = block.__call__
+        block.__call__ = nnx.remat(original_call)
+
+    return model
+
+
 def process_model(model, trconfig):
-    """Apply sharding/placement to a model based on TrainerConfig.
+    """Apply sharding/placement and gradient checkpointing based on TrainerConfig.
 
     Args:
         model: An nnx.Module to shard or place.
@@ -169,6 +186,12 @@ def process_model(model, trconfig):
         return model
 
     raise ValueError(f"Unknown sharding strategy: {sharding}")
+
+
+def _apply_checkpointing(model, trconfig):
+    if getattr(trconfig, "gradient_checkpointing", False):
+        apply_gradient_checkpointing(model)
+    return model
 
 def load_dataset(dataset, config: DatasetConfig | None = None):
     """Load a dataset and return a random-access source for grain.
@@ -322,8 +345,7 @@ class Logger:
     def log(self, metrics: dict, step: int):
         """Log metrics to all active backends."""
         if "stdout" in self.backends:
-            parts = [f"{k}: {v:.4f}" if isinstance(v, float) else f"{k}: {v}" for k, v in metrics.items()]
-            print(f"step {step} | " + " | ".join(parts))
+            print({k: round(v, 4) if isinstance(v, float) else v for k, v in metrics.items()})
 
         if "tensorboard" in self.backends and self._tb_writer:
             for k, v in metrics.items():

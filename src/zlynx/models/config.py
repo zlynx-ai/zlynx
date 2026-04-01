@@ -6,7 +6,7 @@ from flax import struct
 
 
 @struct.dataclass
-class C:
+class Cnf:
     arch: str | None = None
     conf: str | None = None
     processor: str | None = None
@@ -25,7 +25,7 @@ class C:
 
 
 @struct.dataclass
-class LanguageConfig(C):
+class LanguageConfig(Cnf):
     vocab_size: int | None = None
     hidden_size: int | None = None
     intermediate_size: int | None = None

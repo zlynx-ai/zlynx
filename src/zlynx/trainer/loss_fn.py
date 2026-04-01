@@ -24,6 +24,7 @@ def causal_lm_loss(model, batch):
 # Training step (JIT-compiled)
 # ─────────────────────────────────────────────────────────────
 
+@nnx.jit
 def compute_loss_and_grads(model, loss_fn, batch):
     """Compute loss, aux data, and gradients for a single micro-batch.
 
