@@ -255,29 +255,7 @@ class Z(nnx.Module):
 
         model = nnx.merge(gdef, state)
 
-        processor = None
-        # if processor class is set in model class
-        processor_class = getattr(arch, "processor", None)
-        if processor_class is None:
-            if config is not None:
-                # maybe in the models lib
-                processor_class_name = getattr(config, "processor", None)
-                if processor_class_name is not None:
-                    processor_class = getattr(models, processor_class_name, None)
-                    if processor_class is None:
-                        # maybe it's user defined
-                        processor_class = getattr(globals(), processor_class_name, None)
-
-        if processor_class is None:
-            logging.warning("No processor in this model, return None")
-
-        else:
-            processor = processor_class.load(path)
-            if processor is not None:
-                logging.info("The model processor has been loaded")
-
-        setattr(model, "processor", processor)
-        return model, processor
+        return model
     
     def _save_safetensors(self, path: str | Path, max_shard_size_gb: float=3.0) -> None:
         
@@ -366,10 +344,6 @@ class Z(nnx.Module):
                 if format == "safetensors":
                     self._save_safetensors(tmp_path, max_shard_size_gb=max_shard_size_gb)
 
-                processor = getattr(self, "processor", None)
-                if processor is not None:
-                    processor.save(tmp_path)
-
                 if config is not None:
                     with open(tmp_path / "config.json", "w") as config_file:
                         json.dump(serialization.to_state_dict(config), config_file, indent=2)
@@ -426,10 +400,6 @@ class Z(nnx.Module):
                 if format in ["safetensors", "all"]:
                     self._save_safetensors(tmp_path, max_shard_size_gb=max_shard_size_gb)
 
-                processor = getattr(self, "processor", None)
-                if processor is not None:
-                    processor.save(tmp_path)
-
                 if config is not None:
                     with open(tmp_path / "config.json", "w") as config_file:
                         json.dump(serialization.to_state_dict(config), config_file, indent=2)
@@ -483,10 +453,6 @@ class Z(nnx.Module):
                 if format in ["safetensors", "all"]:
                     self._save_safetensors(tmp_path, max_shard_size_gb=max_shard_size_gb)
 
-                processor = getattr(self, "processor", None)
-                if processor is not None:
-                    processor.save(tmp_path)
-
                 if config is not None:
                     with open(tmp_path / "config.json", "w") as config_file:
                         json.dump(serialization.to_state_dict(config), config_file, indent=2)
@@ -526,7 +492,7 @@ class Z(nnx.Module):
         )
         path = Path(local_dir).resolve()
 
-        model, processor = cls.load(
+        model = cls.load(
             path, dtype=dtype, 
             config=config, 
             sharding=sharding, 
@@ -535,7 +501,7 @@ class Z(nnx.Module):
             module_map=module_map,
             **model_kwargs
         )
-        return model, processor
+        return model
     
 
     @classmethod
@@ -560,7 +526,7 @@ class Z(nnx.Module):
         )
         path = Path(local_dir).resolve()
 
-        model, processor = cls.load(
+        model = cls.load(
             path, dtype=dtype, 
             config=config, 
             sharding=sharding, 
@@ -569,4 +535,4 @@ class Z(nnx.Module):
             module_map=module_map,
             **model_kwargs
         )
-        return model, processor
+        return model

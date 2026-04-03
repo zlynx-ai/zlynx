@@ -30,7 +30,6 @@ class Trainer:
         model,
         dataset,
         loss_fn: Callable,
-        processor=None,
         trconfig: TrainerConfig | None = None,
         dsconfig: DatasetConfig | None = None,
     ):
@@ -41,12 +40,9 @@ class Trainer:
             dataset: HF dataset name (str), datasets.Dataset, IterableDataset, list, or dict.
             loss_fn: Callable with signature (model, batch) → scalar loss.
                 Must be JIT-compatible (no Python side effects).
-            processor: Optional tokenizer/processor. Stored for convenience but
-                not used by the Trainer directly — pass it into loss_fn if needed.
             trconfig: Training hyperparameters. Defaults to TrainerConfig().
             dsconfig: Dataset processing options. Defaults to DatasetConfig().
         """
-        self.processor = processor
         self.loss_fn = loss_fn
         self.trconfig = trconfig or TrainerConfig()
         self.dsconfig = dsconfig or DatasetConfig()

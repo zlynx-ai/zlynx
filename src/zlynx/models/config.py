@@ -9,7 +9,6 @@ from flax import struct
 class Cnf:
     arch: str | None = None
     conf: str | None = None
-    processor: str | None = None
     
     
 

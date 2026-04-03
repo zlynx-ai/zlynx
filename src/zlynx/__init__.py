@@ -1,3 +1,3 @@
 
 
-from zlynx.models.base import Z
+from .models import LanguageModel, Z
