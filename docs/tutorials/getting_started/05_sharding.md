@@ -9,7 +9,7 @@ Scale your training across multiple GPUs or TPUs with a single config change.
 Zlynx handles device placement and model partitioning through the `sharding` option in `TrainerConfig`. Under the hood, it uses JAX's `NamedSharding` and `Mesh` APIs — but you don't need to touch those directly.
 
 ```python
-trconfig = TrainerConfig(
+config = TrainerConfig(
     sharding="auto",   # ← this is all you need
     ...
 )
@@ -22,9 +22,8 @@ trconfig = TrainerConfig(
 | Value    | Strategy                                                      | Best for                                        |
 | -------- | ------------------------------------------------------------- | ----------------------------------------------- |
 | `"auto"` | Auto-detect based on model size and device memory             | Most cases — let Zlynx decide                   |
-| `"dp"`   | Data Parallel — replicate model, split data                   | Model fits on one device                        |
-| `"fsdp"` | Fully Sharded Data Parallel — shard parameters across devices | Large models that don't fit on one device       |
-| `"tp"`   | Tensor Parallel — shard specific weight matrices              | Very large models with transformer architecture |
+| `"ddp"`  | Data Parallel — replicate model, split data                   | Model fits on one device                        |
+| `"fsdp"` | Fully Sharded Data Parallel — shard parameters across devices | Large models that don't fit on one device        |
 | `False`  | Single device (no distribution)                               | Debugging, single GPU                           |
 | `None`   | Skip — assume user applied custom sharding                    | Advanced use cases                              |
 | `<int>`  | Place on a specific device by ID                              | Targeting a particular GPU                      |
@@ -35,14 +34,14 @@ trconfig = TrainerConfig(
 
 The default `"auto"` strategy makes a smart choice:
 
-1. **If the model fits on one device** (with ≥1.5 GB headroom) **and** there are multiple devices → uses **Data Parallel** (`"dp"`)
-2. **If the model is too large** for one device → uses **FSDP**
+1. **If the model fits on one device** (with ≥1.5 GB headroom) **and** there are multiple devices → uses **DDP** (replicate)
+2. **If the model is too large** for one device → uses **FSDP** (shard)
 3. **Single device** → does nothing (no sharding needed)
 
 ```python
-trconfig = TrainerConfig(
+config = TrainerConfig(
     sharding="auto",
-    batch_size=64,
+    per_device_batch_size=64,
     ...
 )
 ```
@@ -51,14 +50,14 @@ This is the recommended default for most workloads.
 
 ---
 
-## Data Parallel (DP)
+## DDP (Distributed Data Parallel)
 
 Replicates the full model on every device. Each device processes a different slice of the batch. Gradients are averaged across devices.
 
 ```python
-trconfig = TrainerConfig(
-    sharding="dp",
-    batch_size=64,   # total batch across all devices
+config = TrainerConfig(
+    sharding="ddp",
+    per_device_batch_size=64,   # batch per device
     ...
 )
 ```
@@ -67,14 +66,14 @@ trconfig = TrainerConfig(
 
 ---
 
-## Fully Sharded Data Parallel (FSDP)
+## FSDP (Fully Sharded Data Parallel)
 
 Shards model parameters across devices. Each device holds only a fraction of the weights, dramatically reducing per-device memory.
 
 ```python
-trconfig = TrainerConfig(
+config = TrainerConfig(
     sharding="fsdp",
-    batch_size=64,
+    per_device_batch_size=64,
     ...
 )
 ```
@@ -88,44 +87,16 @@ Zlynx automatically decides how to shard:
 
 ---
 
-## Tensor Parallel (TP)
-
-Splits individual weight matrices across devices. Zlynx applies sensible partitioning rules for transformer architectures:
-
-```python
-trconfig = TrainerConfig(
-    sharding="tp",
-    batch_size=64,
-    ...
-)
-```
-
-The default TP partitioning:
-
-| Layer                                | Partitioning                 |
-| ------------------------------------ | ---------------------------- |
-| `embed_tokens.embedding`             | Shard rows across TP axis    |
-| `lm_head.kernel`                     | Shard columns across TP axis |
-| `q_proj`, `k_proj`, `v_proj` kernels | Shard columns                |
-| `o_proj.kernel`                      | Shard rows                   |
-| `gate_proj`, `up_proj` kernels       | Shard columns                |
-| `down_proj.kernel`                   | Shard rows                   |
-| Everything else                      | Replicated                   |
-
-**When to use:** Very large transformer models where you need intra-layer parallelism.
-
----
-
 ## Single Device
 
 Force everything onto one device:
 
 ```python
 # Use the first device
-trconfig = TrainerConfig(sharding=False, ...)
+config = TrainerConfig(sharding=False, ...)
 
 # Or pick a specific device by index
-trconfig = TrainerConfig(sharding=2, ...)   # device ID 2
+config = TrainerConfig(sharding=2, ...)   # device ID 2
 ```
 
 ---
@@ -150,7 +121,7 @@ state = jax.device_put(state, replicated)
 nnx.update(model, state)
 
 # Tell Trainer to skip sharding
-trconfig = TrainerConfig(sharding=None, ...)
+config = TrainerConfig(sharding=None, ...)
 ```
 
 ---
@@ -188,25 +159,25 @@ print(jax.devices())   # [CpuDevice(id=0), CpuDevice(id=1), ...]
 
 ```python
 import jax
-from zlynx.trainer import Trainer, TrainerConfig, DatasetConfig
+from zlynx.trainer import Trainer, TrainerConfig
 
 print(f"Training on {len(jax.devices())} {jax.default_backend().upper()} devices")
 
-trconfig = TrainerConfig(
-    batch_size=128,
+config = TrainerConfig(
+    per_device_batch_size=128,
     learning_rate=1e-3,
     num_epochs=5,
-    sharding="auto",                 # auto-selects DP or FSDP
+    sharding="auto",                 # auto-selects DDP or FSDP
     output_dir="./multi_gpu_output",
-    log_to=["stdout", "wandb"],
+    log_to=["wandb"],
+    processing_train_dataset_fn=preprocess,
 )
 
 trainer = Trainer(
     model=model,
-    dataset=train_data,
     loss_fn=loss_fn,
-    trconfig=trconfig,
-    dsconfig=DatasetConfig(shuffle=True, preprocessing_fn=preprocess),
+    train_dataset=train_data,
+    config=config,
 )
 
 trainer.train()
@@ -218,10 +189,8 @@ trainer.train()
 
 ```
 Does your model fit on one device?
-├── YES → Use "dp" (or "auto")
-└── NO
-    ├── Is it a transformer? → Try "tp"
-    └── Otherwise → Use "fsdp"
+├── YES → Use "ddp" (or "auto")
+└── NO  → Use "fsdp"
 
 Not sure? → Use "auto" and let Zlynx decide.
 ```

@@ -6,25 +6,13 @@ from flax import struct
 
 
 @struct.dataclass
-class Cnf:
+class Config:
     arch: str | None = None
     conf: str | None = None
-    
-    
-
-
-# @struct.dataclass
-# class VisionConfig(C):
-#     ...
-
-
-# @struct.dataclass
-# class AudioConfig(C):
-#     ...
-
+  
 
 @struct.dataclass
-class LanguageConfig(Cnf):
+class LanguageConfig(Config):
     vocab_size: int | None = None
     hidden_size: int | None = None
     intermediate_size: int | None = None
@@ -47,11 +35,4 @@ class LanguageConfig(Cnf):
     original_max_position_embedding: int | None = None
     max_position_embedding: int | None = None
     rope_scaling: dict | None = None
-
-
-# @struct.dataclass
-# class ModelConfig(C):
-#     language_config: LanguageConfig | None = None
-#     vision_config: VisionConfig | None = None
-#     audio_config: AudioConfig | None = None
 

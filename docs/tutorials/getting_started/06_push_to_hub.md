@@ -125,7 +125,7 @@ from zlynx import Z
 
 class MyModel(Z): ...
 
-model, tokenizer = MyModel.load_hf("username/my-model")
+model = MyModel.load_hf("username/my-model")
 ```
 
 ### Load from Kaggle
@@ -134,10 +134,10 @@ model, tokenizer = MyModel.load_hf("username/my-model")
 import kagglehub
 kagglehub.login()
 
-model, _ = MyModel.load_kaggle("username/my-model")
+model = MyModel.load_kaggle("username/my-model")
 
 # With specific variation
-model, _ = MyModel.load_kaggle("username/my-model", variation="v2")
+model = MyModel.load_kaggle("username/my-model", variation="v2")
 ```
 
 ---
@@ -145,16 +145,17 @@ model, _ = MyModel.load_kaggle("username/my-model", variation="v2")
 ## Full Example: Train & Push
 
 ```python
-from zlynx import Z, Trainer, TrainerConfig
+from zlynx import Z
+from zlynx.trainer import Trainer, TrainerConfig
 
 # 1. Define your model
 class MyModel(Z): ...
 
 # 2. Load pretrained weights
-model, tokenizer = MyModel.load_hf("base-model/weights")
+model = MyModel.load_hf("base-model/weights")
 
 # 3. Fine-tune
-trainer = Trainer(model, train_dataset, TrainerConfig(num_epochs=3))
+trainer = Trainer(model, loss_fn, train_dataset, config=TrainerConfig(num_epochs=3))
 trainer.train()
 
 # 4. Push to HuggingFace

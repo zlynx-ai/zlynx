@@ -217,7 +217,7 @@ More target modules = more trainable parameters = better quality but slower trai
 ```python
 from zlynx.models.llama import LlamaConfig, LlamaLanguageModel
 from zlynx.modules.peft import apply_peft
-from zlynx.trainer import Trainer, TrainerConfig, DatasetConfig
+from zlynx.trainer import Trainer, TrainerConfig
 from flax import nnx
 
 # Load a model
@@ -237,10 +237,13 @@ model = apply_peft(
 # Train as usual — only adapter params are updated
 trainer = Trainer(
     model=model,
-    dataset="your_dataset",
     loss_fn=loss_fn,
-    trconfig=TrainerConfig(learning_rate=2e-4, num_epochs=3),
-    dsconfig=DatasetConfig(path="your_dataset", preprocessing_fn=preprocess),
+    train_dataset="your_dataset",
+    config=TrainerConfig(
+        learning_rate=2e-4,
+        num_epochs=3,
+        processing_train_dataset_fn=preprocess,
+    ),
 )
 trainer.train()
 

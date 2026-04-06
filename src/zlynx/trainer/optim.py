@@ -2,25 +2,169 @@ from typing import NamedTuple, Any
 import optax
 import jax
 import jax.numpy as jnp
+import inspect
 
 from .trainer import TrainerConfig
 
 
-OPTIMIZERS = {
-    "adamw": optax.adamw,
-    "adam": optax.adam,
-    "sgd": optax.sgd,
-    "lion": optax.lion,
+CORE_OPTIMIZERS = {
+    "adabelief", "adadelta", "adafactor", "adagrad", "adam", "adamax",
+    "adamaxw", "adamw", "adan", "amsgrad", "fromage", "lamb", "lars",
+    "lbfgs", "lion", "lookahead", "nadam", "nadamw", "noisy_sgd",
+    "novograd", "optimistic_adam", "optimistic_adam_v2",
+    "optimistic_gradient_descent", "polyak_sgd", "radam", "rmsprop",
+    "rprop", "sgd", "sign_sgd", "sm3", "yogi",
 }
 
+CONTRIB_OPTIMIZERS = {
+    "ademamix", "dadapt_adamw", "dog", "dowg", "dpsgd", "madgrad",
+    "mechanize", "momo", "momo_adam", "muon", "prodigy", "sam",
+}
+
+
+def get_optimizer(config: TrainerConfig):
+    name_or_fn = config.optimizer
+
+    if callable(name_or_fn):
+        return name_or_fn
+
+    if not isinstance(name_or_fn, str):
+        raise TypeError(
+            f"`optimizer` must be a callable or string, got {type(name_or_fn).__name__}"
+        )
+
+    name = name_or_fn.removeprefix("galore_").lower()
+
+    if name in CORE_OPTIMIZERS:
+        return getattr(optax, name)
+
+    contrib = getattr(optax, "contrib", None)
+    if contrib is not None and name in CONTRIB_OPTIMIZERS and hasattr(contrib, name):
+        return getattr(contrib, name)
+
+    available = ", ".join(sorted(CORE_OPTIMIZERS | CONTRIB_OPTIMIZERS))
+    raise ValueError(
+        f"Unknown optimizer: {name_or_fn!r}. "
+        f"Available optimizers: {available}"
+    )
+
+
 SCHEDULERS = {
-    "constant": lambda lr, total, warmup: optax.constant_schedule(lr),
-    "linear": lambda lr, total, warmup: optax.linear_schedule(lr, 0.0, total),
-    "cosine": lambda lr, total, warmup: optax.cosine_decay_schedule(lr, total),
-    "warmup_cosine": lambda lr, total, warmup: optax.warmup_cosine_decay_schedule(
-        init_value=0.0, peak_value=lr, warmup_steps=warmup, decay_steps=total
+    "constant": lambda lr, total, warmup=0, **kw: optax.constant_schedule(
+        value=kw.get("value", lr),
+    ),
+
+    "linear": lambda lr, total, warmup=0, **kw: optax.linear_schedule(
+        init_value=kw.get("init_value", lr),
+        end_value=kw.get("end_value", 0.0),
+        transition_steps=kw.get("transition_steps", total),
+    ),
+
+    "cosine": lambda lr, total, warmup=0, **kw: optax.cosine_decay_schedule(
+        init_value=kw.get("init_value", lr),
+        decay_steps=kw.get("decay_steps", total),
+        alpha=kw.get("alpha", 0.0),
+        exponent=kw.get("exponent", 1.0),
+    ),
+
+    "cosine_onecycle": lambda lr, total, warmup=0, **kw: optax.cosine_onecycle_schedule(
+        transition_steps=kw.get("transition_steps", total),
+        peak_value=kw.get("peak_value", lr),
+        pct_start=kw.get("pct_start", 0.3),
+        div_factor=kw.get("div_factor", 25.0),
+        final_div_factor=kw.get("final_div_factor", 10000.0),
+    ),
+
+    "exponential": lambda lr, total, warmup=0, **kw: optax.exponential_decay(
+        init_value=kw.get("init_value", lr),
+        transition_steps=kw.get("transition_steps", total),
+        decay_rate=kw.get("decay_rate", 0.99),
+        transition_begin=kw.get("transition_begin", 0),
+        staircase=kw.get("staircase", False),
+        end_value=kw.get("end_value", None),
+    ),
+
+    "join": lambda lr, total, warmup=0, **kw: optax.join_schedules(
+        schedules=kw["schedules"],
+        boundaries=kw["boundaries"],
+    ),
+
+    "linear_onecycle": lambda lr, total, warmup=0, **kw: optax.linear_onecycle_schedule(
+        transition_steps=kw.get("transition_steps", total),
+        peak_value=kw.get("peak_value", lr),
+        pct_start=kw.get("pct_start", 0.3),
+        pct_final=kw.get("pct_final", 0.85),
+        div_factor=kw.get("div_factor", 25.0),
+        final_div_factor=kw.get("final_div_factor", 10000.0),
+    ),
+
+    "piecewise_constant": lambda lr, total, warmup=0, **kw: optax.piecewise_constant_schedule(
+        init_value=kw.get("init_value", lr),
+        boundaries_and_scales=kw.get("boundaries_and_scales", {}),
+    ),
+
+    "piecewise_interpolate": lambda lr, total, warmup=0, **kw: optax.piecewise_interpolate_schedule(
+        interpolate_type=kw.get("interpolate_type", "linear"),
+        init_value=kw.get("init_value", lr),
+        boundaries_and_scales=kw.get("boundaries_and_scales", {}),
+    ),
+
+    "polynomial": lambda lr, total, warmup=0, **kw: optax.polynomial_schedule(
+        init_value=kw.get("init_value", lr),
+        end_value=kw.get("end_value", 0.0),
+        power=kw.get("power", 1.0),
+        transition_steps=kw.get("transition_steps", total),
+        transition_begin=kw.get("transition_begin", 0),
+    ),
+
+    "sgdr": lambda lr, total, warmup=0, **kw: optax.sgdr_schedule(
+        cosine_kwargs=kw["cosine_kwargs"],
+    ),
+
+    "warmup_constant": lambda lr, total, warmup=0, **kw: optax.warmup_constant_schedule(
+        init_value=kw.get("init_value", 0.0),
+        peak_value=kw.get("peak_value", lr),
+        warmup_steps=kw.get("warmup_steps", warmup),
+    ),
+
+    "warmup_cosine_decay": lambda lr, total, warmup=0, **kw: optax.warmup_cosine_decay_schedule(
+        init_value=kw.get("init_value", 0.0),
+        peak_value=kw.get("peak_value", lr),
+        warmup_steps=kw.get("warmup_steps", warmup),
+        decay_steps=kw.get("decay_steps", total),
+        end_value=kw.get("end_value", 0.0),
+        exponent=kw.get("exponent", 1.0),
+    ),
+
+    "warmup_exponential_decay": lambda lr, total, warmup=0, **kw: optax.warmup_exponential_decay_schedule(
+        init_value=kw.get("init_value", 0.0),
+        peak_value=kw.get("peak_value", lr),
+        warmup_steps=kw.get("warmup_steps", warmup),
+        transition_steps=kw.get("transition_steps", max(total - warmup, 1)),
+        decay_rate=kw.get("decay_rate", 0.99),
+        transition_begin=kw.get("transition_begin", 0),
+        staircase=kw.get("staircase", False),
+        end_value=kw.get("end_value", None),
     ),
 }
+
+def get_scheduler(config: TrainerConfig):
+    if callable(config.lr_scheduler):
+        schedule_fn = config.lr_scheduler
+    elif isinstance(config.lr_scheduler, str):
+        if config.lr_scheduler not in SCHEDULERS:
+            available = ", ".join(sorted(SCHEDULERS))
+            raise ValueError(
+                f"Unknown lr_scheduler: {config.lr_scheduler!r}. "
+                f"Available schedulers: {available}"
+            )
+        schedule_fn = SCHEDULERS[config.lr_scheduler]
+    else:
+        raise TypeError(
+            f"`lr_scheduler` must be a callable or string, got "
+            f"{type(config.lr_scheduler).__name__}"
+        )
+    return schedule_fn
 
 
 class GaloreState(NamedTuple):
@@ -184,33 +328,39 @@ def set_galore_state(opt_state, idx, new_gstate):
     return tuple(new_state)
 
 
-def build_optimizer(trconfig: "TrainerConfig", total_steps: int):
-    """Build an optax optimizer chain from TrainerConfig."""
-    warmup = trconfig.warmup_steps or int(trconfig.warmup_ratio * total_steps)
 
-    schedule_fn = SCHEDULERS.get(trconfig.lr_scheduler, SCHEDULERS["cosine"])
-    schedule = schedule_fn(trconfig.learning_rate, total_steps, warmup)
+def build_optimizer(config: "TrainerConfig", total_steps: int):
+    """
+    Build an optax optimizer chain from TrainerConfig.
 
-    opt_fn = OPTIMIZERS.get(trconfig.optimizer.replace("galore_", ""))
-    if opt_fn is None:
-        raise ValueError(f"Unknown optimizer: {trconfig.optimizer}. Available inner: {list(OPTIMIZERS.keys())}")
+    some optimizer 
+    """
+    warmup = config.warmup_steps or int(config.warmup_ratio * total_steps)
 
-    inner_kwargs = {k: v for k, v in trconfig.optimizer_kwargs.items() if not k.startswith("galore_")}
+    schedule_fn = get_scheduler(config)
+    schedule = schedule_fn(config.learning_rate, total_steps, warmup)
 
-    if "adamw" in trconfig.optimizer:
-        opt = opt_fn(learning_rate=schedule, weight_decay=trconfig.weight_decay, **inner_kwargs)
-    elif "sgd" in trconfig.optimizer:
-        opt = opt_fn(learning_rate=schedule, **inner_kwargs)
+    opt_fn = get_optimizer(config)
+    sig = inspect.signature(opt_fn)
+
+    inner_kwargs = {
+        k: v for k, v in config.optimizer_kwargs.items()
+        if not k.startswith("galore_")
+    }
+
+    kwargs = dict(inner_kwargs)
+    if "learning_rate" in sig.parameters:
+        kwargs["learning_rate"] = schedule
+
+    inner = opt_fn(**kwargs)
+
+    if config.weight_decay:
+        opt = optax.chain(
+            optax.add_decayed_weights(config.weight_decay),
+            inner,
+        )
     else:
-        opt = opt_fn(learning_rate=schedule, **inner_kwargs)
-        
-    if trconfig.optimizer.startswith("galore_"):
-        r = trconfig.optimizer_kwargs.get("galore_r", 128)
-        update_gap = trconfig.optimizer_kwargs.get("galore_update_proj_gap", 200)
-        scale = trconfig.optimizer_kwargs.get("galore_scale", 1.0)
-        opt = galore_wrapper(opt, r=r, update_proj_gap=update_gap, scale=scale)
+        opt = inner
 
-    if trconfig.max_grad_norm is not None:
-        opt = optax.chain(optax.clip_by_global_norm(trconfig.max_grad_norm), opt)
-
-    return opt
+    opt = optax.with_extra_args_support(opt)
+    return opt, schedule

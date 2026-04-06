@@ -25,7 +25,7 @@ Just change your optimizer string — everything else stays the same:
 ```python
 from zlynx.trainer import TrainerConfig
 
-trconfig = TrainerConfig(
+config = TrainerConfig(
     optimizer="galore_adamw",
     learning_rate=2e-5,
     optimizer_kwargs={
@@ -99,7 +99,7 @@ The projection is only applied to 2D+ tensors (weight matrices). Parameters with
 
 ```python
 from zlynx.models.llama import LlamaConfig, LlamaLanguageModel
-from zlynx.trainer import Trainer, TrainerConfig, DatasetConfig
+from zlynx.trainer import Trainer, TrainerConfig
 
 config = LlamaConfig(vocab_size=32000, hidden_size=2048, num_hidden_layers=16, head_dim=64)
 model = LlamaLanguageModel(config)
@@ -108,25 +108,25 @@ trconfig = TrainerConfig(
     optimizer="galore_adamw",
     learning_rate=2e-5,
     weight_decay=0.01,
-    lr_scheduler="warmup_cosine",
+    lr_scheduler="warmup_cosine_decay",
     warmup_steps=100,
     num_epochs=3,
-    batch_size=32,
+    per_device_batch_size=32,
     optimizer_kwargs={
         "galore_r": 128,
         "galore_update_proj_gap": 200,
         "galore_scale": 1.0,
     },
     sharding="fsdp",
-    log_to=["stdout", "wandb"],
+    log_to=["wandb"],
+    processing_train_dataset_fn=preprocess,
 )
 
 trainer = Trainer(
     model=model,
-    dataset=train_data,
     loss_fn=loss_fn,
-    trconfig=trconfig,
-    dsconfig=DatasetConfig(preprocessing_fn=preprocess, shuffle=True),
+    train_dataset=train_data,
+    config=trconfig,
 )
 trainer.train()
 ```

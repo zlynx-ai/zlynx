@@ -46,12 +46,6 @@ my_model/
 └── ...
 ```
 
-### Save in Both Formats
-
-```python
-model.save("./my_model", format="all")
-```
-
 ### Max Shard Size
 
 Control the max size per safetensors file:
@@ -67,7 +61,7 @@ model.save("./my_model", format="safetensors", max_shard_size_gb=1)
 Use the **class method** `load()` on your model class:
 
 ```python
-model, processor = CNN.load(
+model = CNN.load(
     "./my_model",
     key=jax.random.key(0),
     num_classes=10,
@@ -78,22 +72,10 @@ model, processor = CNN.load(
 
 Flax NNX needs to reconstruct the **model structure** (shapes, layers, etc.) before it can load the saved weights into it. The `load()` method:
 
-1. Calls your `__init__` with the provided args to build an abstract model skeleton
-2. Loads the Orbax checkpoint into that skeleton
+1. Calls your `__init__` with the provided args to build an abstract model skeleton via `nnx.eval_shape`
+2. Loads the checkpoint into that skeleton
 
 The `key` can be **any key** — it's only used for structural initialization. The saved weights overwrite all parameters.
-
-### The Return Tuple
-
-`load()` always returns `(model, processor)`:
-
-- `model` — the loaded model with restored weights
-- `processor` — a tokenizer/processor if the model class defines one (e.g. for language models). `None` for most custom models.
-
-```python
-# For models without a processor, just ignore the second value:
-model, _ = CNN.load("./my_model", key=jax.random.key(0), num_classes=10)
-```
 
 ---
 
@@ -117,7 +99,7 @@ output/checkpoints/
 To load a Trainer checkpoint, point to the `default` subdirectory:
 
 ```python
-model, _ = CNN.load(
+model = CNN.load(
     "./output/checkpoints/2814/default",
     key=jax.random.key(0),
     num_classes=10,
@@ -131,13 +113,13 @@ model, _ = CNN.load(
 
 ## Loading Config-Based Models
 
-For models that use a config dataclass (like `LlamaLanguageModel`), loading is slightly different:
+For models that use a config dataclass (like `LlamaLanguageModel`), loading is simpler — no extra kwargs needed:
 
 ```python
 from zlynx import Z
 
 # If the checkpoint directory contains config.json, Z figures out the architecture:
-model, processor = Z.load("./llama-checkpoint")
+model = Z.load("./llama-checkpoint")
 ```
 
 Or load with a specific class:
@@ -145,56 +127,55 @@ Or load with a specific class:
 ```python
 from zlynx.models.llama import LlamaLanguageModel, LlamaConfig
 
-config = LlamaConfig(vocab_size=32000, hidden_size=2048, ...)
-model, processor = LlamaLanguageModel.load("./llama-checkpoint", config=config)
+config = LlamaConfig(vocab_size=32000, hidden_size=2048)
+model = LlamaLanguageModel.load("./llama-checkpoint", config=config)
 ```
 
 ### With dtype casting
 
 ```python
 # Load in bfloat16 for memory efficiency
-model, processor = LlamaLanguageModel.load("./llama-checkpoint", dtype="bfloat16")
+model = LlamaLanguageModel.load("./llama-checkpoint", dtype="bfloat16")
 ```
 
 ---
 
 ## Loading from HuggingFace
 
-Load models directly from HuggingFace Hub using your custom model class:
+Load models directly from HuggingFace Hub:
 
 ```python
 from zlynx import Z
 
 class MyModel(Z): ...
 
-model, tokenizer = MyModel.load_hf("username/my-model")
+model = MyModel.load_hf("username/my-model")
 ```
 
 ### With sharding
 
 ```python
-# Load with model sharding across devices
-model, _ = MyModel.load_hf("username/my-model", sharding="fsdp")
+# Load with FSDP sharding across devices
+model = MyModel.load_hf("username/my-model", sharding="fsdp")
 
 # Load with data parallel sharding
-model, _ = MyModel.load_hf("username/my-model", sharding="ddp")
+model = MyModel.load_hf("username/my-model", sharding="ddp")
 ```
 
 ### With dtype
 
 ```python
-# Load in bfloat16 for memory efficiency
-model, tokenizer = MyModel.load_hf("username/my-model", dtype="bfloat16")
+model = MyModel.load_hf("username/my-model", dtype="bfloat16")
 ```
 
 ### Format options
 
 ```python
-# Load safetensors format (default)
-model, tokenizer = MyModel.load_hf("username/my-model", format="safetensors")
+# Load safetensors format (default for HF)
+model = MyModel.load_hf("username/my-model", format="safetensors")
 
 # Load orbax format
-model, tokenizer = MyModel.load_hf("username/my-model", format="orbax")
+model = MyModel.load_hf("username/my-model", format="orbax")
 ```
 
 ---
@@ -209,19 +190,19 @@ kagglehub.login()
 
 class MyModel(Z): ...
 
-model, _ = MyModel.load_kaggle("username/my-model")
+model = MyModel.load_kaggle("username/my-model")
 ```
 
 ### With variation
 
 ```python
-model, _ = MyModel.load_kaggle("username/my-model", variation="v1")
+model = MyModel.load_kaggle("username/my-model", variation="v1")
 ```
 
 ### With sharding
 
 ```python
-model, _ = MyModel.load_kaggle("username/my-model", sharding="fsdp")
+model = MyModel.load_kaggle("username/my-model", sharding="fsdp")
 ```
 
 ---

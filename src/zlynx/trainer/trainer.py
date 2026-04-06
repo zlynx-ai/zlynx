@@ -4,7 +4,10 @@ import time
 import jax, jax.numpy as jnp
 from flax import nnx
 from orbax import checkpoint as ocp
-from typing import Callable, Optional
+from typing import Callable, Optional, Any
+import optax
+from tqdm import tqdm
+import sys
 
 from .trainer_config import (
     DatasetConfig, SFTConfig, 
@@ -16,9 +19,9 @@ from .loss_fn import (
     grpo_loss_fn, dpo_loss_fn, 
     token_log_probs, diffusion_loss
 )
-from .utils import process_model, process_dataset, Logger, _apply_checkpointing
+from .process import process_model, process_dataset, apply_remat
 from .optim import build_optimizer, find_galore_state, set_galore_state, update_galore_projectors
-
+from .logger import Logger, TrainingMetric, print_training_banner, _get_training_banner_args
 
 # ─────────────────────────────────────────────────────────────
 # Trainer
@@ -28,32 +31,105 @@ class Trainer:
     def __init__(
         self,
         model,
-        dataset,
         loss_fn: Callable,
-        trconfig: TrainerConfig | None = None,
-        dsconfig: DatasetConfig | None = None,
+        train_dataset,
+        eval_dataset: Optional[Any] = None,
+        config: TrainerConfig | None = None,
     ):
-        """Create a Trainer.
+        """
+        Initialize the trainer with a model, loss function, datasets, and config.
 
         Args:
-            model: An nnx.Module to train.
-            dataset: HF dataset name (str), datasets.Dataset, IterableDataset, list, or dict.
-            loss_fn: Callable with signature (model, batch) → scalar loss.
-                Must be JIT-compatible (no Python side effects).
-            trconfig: Training hyperparameters. Defaults to TrainerConfig().
-            dsconfig: Dataset processing options. Defaults to DatasetConfig().
+            model:
+                The model to train. This same model is passed to `loss_fn`
+                during training and evaluation.
+
+            loss_fn:
+                A callable with signature `loss_fn(model, batch)`.
+
+                - `model` is the model passed into the trainer.
+                - `batch` is a batch of data produced from the dataset pipeline,
+                  already grouped using the batch size defined in `config`.
+
+                The function may return either:
+
+                1. A loss directly: `loss`
+
+                2. A dictionary containing at least `"loss"`:
+                   ```
+                   {"loss": loss, ...}
+                   ```
+
+                Returning a dict allows extra values to be exposed to
+                `config.logging_fn`. In that case, each callable in
+                `config.logging_fn` receives the returned dictionary as
+                keyword arguments.
+
+                Example:
+                    ```
+                    {
+                        "loss": loss, 
+                        "nll": nll
+                    }
+                    ```
+
+                    with
+
+                    `logging_fn = {"perplexity": lambda **kw: jnp.exp(kw["loss"])}`
+
+                means the logging callable will receive:
+                    ```
+                    perplexity(loss=loss, nll=nll)
+                    ```
+
+                Example loss functions:
+                    ```python
+                    def loss_fn(model, batch):
+                        logits = model(batch["input_ids"])
+                        loss = cross_entropy_loss(logits, batch["labels"])
+                        return loss
+                    ```
+                    ```
+                    def loss_fn(model, batch):
+                        logits = model(batch["input_ids"])
+                        loss = cross_entropy_loss(logits, batch["labels"])
+                        return {
+                            "loss": loss,
+                            "per_token_loss": loss,
+                        }
+                    ```
+
+            train_dataset:
+                Training dataset or dataset source accepted by `process_dataset`.
+
+            eval_dataset:
+                Optional evaluation dataset or dataset source accepted by
+                `process_dataset`.
+
+            config:
+                Trainer configuration. If `None`, a default `TrainerConfig`
+                is created.
         """
+        
         self.loss_fn = loss_fn
-        self.trconfig = trconfig or TrainerConfig()
-        self.dsconfig = dsconfig or DatasetConfig()
-        self.dataset, self._num_examples = process_dataset(
-            dataset,
-            dsconfig=self.dsconfig,
-            trconfig=self.trconfig,
+        self.config = config = config or TrainerConfig()
+
+        self.train_dataset, self._num_train_examples = process_dataset(
+            train_dataset,
+            config=config,
         )
 
-        self.model = process_model(model, self.trconfig)
-        self.model = _apply_checkpointing(self.model, self.trconfig)
+        self.eval_dataset, self._num_eval_examples = None, None
+        if eval_dataset is not None:
+            self.eval_dataset, self._num_eval_examples = process_dataset(
+                eval_dataset,
+                config=config,
+                is_eval=True
+            )
+
+        self.model, self.config = process_model(model, config)
+        if config.remat:
+            self.model = apply_remat(self.model)
 
     def train(self):
         """Run the full training loop.
@@ -66,19 +142,32 @@ class Trainer:
             - Orbax CheckpointManager with automatic rotation.
             - Early stop at max_steps if set.
         """
-        cfg = self.trconfig
+        cfg = self.config
 
         # ── estimate total steps ──
         total_steps = cfg.max_steps
         if total_steps <= 0:
-            if self._num_examples is None:
-                raise ValueError("max_steps must be set when using a streaming dataset")
-            steps_per_epoch = self._num_examples // (cfg.batch_size * cfg.gradient_accumulation_steps)
+            if self._num_train_examples is None:
+                raise ValueError("`max_steps` must be set when using a streaming dataset")
+            per_device_batch = cfg.per_device_batch_size
+            steps_per_epoch = self._num_train_examples // (per_device_batch * cfg.gradient_accumulation_steps)
             total_steps = steps_per_epoch * cfg.num_epochs
 
+        if self.eval_dataset is not None:
+            if cfg.eval_max_steps <= 0:
+                if self._num_eval_examples is None:
+                    raise ValueError("`eval_max_steps` must be set when using a eval streaming dataset")
+                
+                eval_batch_size = cfg.eval_per_device_batch_size or cfg.per_device_batch_size
+                eval_total_steps = self._num_eval_examples // eval_batch_size
+            else:
+                eval_total_steps = cfg.eval_max_steps
+
         # ── build optimizer ──
-        opt = build_optimizer(cfg, total_steps)
-        optimizer = nnx.Optimizer(self.model, opt, wrt=nnx.Param)
+        opt, schedule = (
+            cfg.build_optimizer_fn and cfg.build_optimizer_fn(cfg, total_steps)
+        ) or build_optimizer(cfg, total_steps)
+        optimizer= nnx.Optimizer(self.model, opt, wrt=nnx.Param)
 
         # ── checkpoint manager (with built-in rotation) ──
         output_dir = Path(cfg.output_dir).resolve()
@@ -89,12 +178,14 @@ class Trainer:
             create=True,
         )
         ckpt_mgr = ocp.CheckpointManager(
-            output_dir / "checkpoints",
+            output_dir,
             options=ckpt_options,
         )
 
         # ── logger ──
         logger = Logger(cfg.log_to, cfg.output_dir, cfg.run_name)
+        model_name = type(self.model).__name__
+        training_metric = TrainingMetric(model_name, self.config)
 
         # ── detect GaLore for projector updates ──
         galore_idx, galore_st = find_galore_state(optimizer.opt_state)
@@ -110,93 +201,241 @@ class Trainer:
         log_loss = 0.0
         t_start = time.time()
 
-        for epoch in range(cfg.num_epochs):
-            for batch in self.dataset:
+        sample_batch = next(iter(self.train_dataset))
+        sample_batch = cfg.processing_train_dataset_fn(sample_batch) \
+            if cfg.processing_train_dataset_fn is not None else sample_batch
+        
+        compute_loss_and_grads_fn = compute_loss_and_grads
+        if cfg.jit_loss_fn:
+            try:
+                compute_loss_and_grads_fn = (
+                    nnx.jit(
+                        compute_loss_and_grads, 
+                        static_argnames="loss_fn"
+                    )
+                    .lower(self.model, self.loss_fn, sample_batch)
+                    .compile()
+                )
+            except TypeError as e:
+                print(e)
+                print()
+                print(
+                    "You may have values in your dataset batch that JAX cannot trace under `jit`.\n"
+                    "This usually happens when the batch passed to `loss_fn` contains unsupported\n"
+                    "types such as Python objects, strings, or NumPy arrays with incompatible dtypes,\n"
+                    "instead of JAX-friendly array values.\n"
+                    "\n"
+                    "To fix this, you can:\n"
+                    "  1. Preprocess your dataset so every field passed to `loss_fn` is JAX-compatible.\n"
+                    "  2. Pass a preprocessing function to `preprocessing_dataset_fn` in `TrainerConfig`\n"
+                    "     to transform dataset samples before they are passed to `loss_fn`.\n"
+                    "  3. Set `jit_loss_fn=False` in `TrainerConfig` to disable JIT for the loss function."
+                )
+                sys.exit(0)
+
+        model_state = nnx.state(self.model)
+        trainable_state = nnx.state(self.model, nnx.Param)
+        total_params = sum(
+            leaf.size for leaf in jax.tree.leaves(model_state) if hasattr(leaf, "size")
+        )
+        trainable_params = sum(
+            leaf.size for leaf in jax.tree.leaves(trainable_state) if hasattr(leaf, "size")
+        )
+
+        print_training_banner(
+            model_name=model_name,
+            total_params=total_params,
+            trainable_params=trainable_params,
+            **_get_training_banner_args(cfg, self.model, total_steps),
+        )
+
+        def _eval_logging():
+            eval_metrics = {
+                "eval_step": global_step,
+                "loss": 0,
+            }
+            if cfg.logging_fn:
+                for name, fn in cfg.logging_fn.items():
+                    eval_metrics[name] = 0
+
+            for i, eval_batch in tqdm(enumerate(self.eval_dataset), desc="eval", total=eval_total_steps):
+                # ── pre-process batch dataset ──
+                eval_batch = (
+                    cfg.processing_eval_dataset_fn and \
+                        cfg.processing_eval_dataset_fn(eval_batch)
+                ) or eval_batch
+
                 # ── forward + backward (micro-batch) ──
-                loss, aux, grads = compute_loss_and_grads(self.model, self.loss_fn, batch)
-                micro_step += 1
+                loss, aux, grads = (
+                    cfg.jit_loss_fn and compute_loss_and_grads_fn(self.model, batch)
+                ) or compute_loss_and_grads_fn(self.model, self.loss_fn, batch)
+                
+                eval_metrics["loss"] += (hasattr(loss, "item") and loss.item()) or loss
 
-                # ── accumulate gradients ──
-                if accum_grads is None:
-                    accum_grads = grads
-                else:
-                    accum_grads = jax.tree.map(jnp.add, accum_grads, grads)
-                accum_loss = accum_loss + loss
+                if cfg.logging_fn:
+                    for name, fn in cfg.logging_fn.items():
+                        eval_metrics[name] += float(fn(**aux))
 
-                # ── update when accumulation is complete ──
-                if micro_step % cfg.gradient_accumulation_steps == 0:
-                    # average gradients
-                    if cfg.gradient_accumulation_steps > 1:
-                        accum_grads = jax.tree.map(
-                            lambda g: g / cfg.gradient_accumulation_steps, accum_grads
-                        )
+                if cfg.eval_max_steps > 0 and (i + 1) > eval_total_steps:
+                    break
 
-                    # ── GaLore projector update (outside JIT) ──
-                    if is_galore and global_step % galore_gap == 0:
-                        params = nnx.state(self.model, nnx.Param)
-                        cur_gstate = galore_st if galore_idx is None else optimizer.opt_state[galore_idx]
-                        new_gstate = update_galore_projectors(cur_gstate, accum_grads, params, r=galore_r)
-                        optimizer.opt_state = set_galore_state(optimizer.opt_state, galore_idx, new_gstate)
-                        galore_st = new_gstate
+            eval_metrics["loss"] /= (i + 1)
+            if cfg.logging_fn:
+                for name, fn in cfg.logging_fn.items():
+                    eval_metrics[name] /= (i + 1)
 
-                    optimizer.update(self.model, accum_grads)
-                    accum_grads = None
-                    global_step += 1
-                    avg_micro_loss = float(accum_loss) / cfg.gradient_accumulation_steps
-                    log_loss += avg_micro_loss
-                    accum_loss = 0.0
+            logger.log(eval_metrics, step=global_step, is_eval=True)
+            training_metric.update_training_metrics(global_step, eval_metrics, is_eval=True)
 
-                    # ── logging ──
-                    if global_step % cfg.logging_steps == 0:
-                        elapsed = time.time() - t_start
-                        avg_loss = log_loss / cfg.logging_steps
+        with tqdm(total=total_steps, position=0, leave=True) as pbar:
+            for epoch in range(cfg.num_epochs):
+                for batch in self.train_dataset:
+                    
+                    # ── pre-process batch dataset ──
+                    batch = (
+                        cfg.processing_train_dataset_fn \
+                            and cfg.processing_train_dataset_fn(batch)
+                    ) or batch
 
-                        # base metrics + anything from loss_fn's dict return
-                        metrics = {
-                            "loss": avg_loss,
-                            "step": global_step,
-                            "epoch": epoch,
-                            "steps_per_sec": cfg.logging_steps / elapsed,
+                    # ── forward + backward (micro-batch) ──
+                    loss, aux, grads = (
+                        cfg.jit_loss_fn \
+                            and compute_loss_and_grads_fn(self.model, batch)
+                    ) or compute_loss_and_grads_fn(self.model, self.loss_fn, batch)
+                    micro_step += 1
+
+                    # ── accumulate gradients ──
+                    if accum_grads is None:
+                        accum_grads = grads
+                    else:
+                        accum_grads = jax.tree.map(jnp.add, accum_grads, grads)
+
+                    accum_loss = accum_loss + loss
+
+                    pbar.set_description(f"step {global_step + 1}/{total_steps}")
+                    pbar.update(1)
+
+                    # ── update when accumulation is complete ──
+                    if micro_step % cfg.gradient_accumulation_steps == 0:
+                        # average gradients
+                        if cfg.gradient_accumulation_steps > 1:
+                            accum_grads = jax.tree.map(
+                                lambda g: g / cfg.gradient_accumulation_steps, accum_grads
+                            )
+
+                        # ── GaLore projector update (outside JIT) ──
+                        if is_galore and global_step % galore_gap == 0:
+                            params = nnx.state(self.model, nnx.Param)
+                            cur_gstate = galore_st if galore_idx is None else optimizer.opt_state[galore_idx]
+                            new_gstate = update_galore_projectors(cur_gstate, accum_grads, params, r=galore_r)
+                            optimizer.opt_state = set_galore_state(optimizer.opt_state, galore_idx, new_gstate)
+                            galore_st = new_gstate
+
+                        def value_fn(model, loss_fn, batch):
+                            if cfg.jit_loss_fn:
+                                return compute_loss_and_grads_fn(model, batch)[0]
+                            return compute_loss_and_grads_fn(model, loss_fn, batch)[0]
+                        
+                        def grad_fn(model, loss_fn, batch): 
+                            if cfg.jit_loss_fn:
+                                return compute_loss_and_grads_fn(model, batch)[2]
+                            return compute_loss_and_grads_fn(model, loss_fn, batch)[2]
+                        
+                        def _compute_loss_and_grads_fn(model, loss_fn, batch):
+                            if cfg.jit_loss_fn:
+                                return compute_loss_and_grads_fn(model, batch)
+                            return compute_loss_and_grads_fn(model, loss_fn, batch)
+
+                        extra_args = (
+                            cfg.return_optimizer_extra_args_fn \
+                                and cfg.return_optimizer_extra_args_fn(
+                                    loss, accum_grads, value_fn, 
+                                    grad_fn, _compute_loss_and_grads_fn
+                                )
+                        ) or {
+                            "value": jnp.array(loss),
+                            "grad": accum_grads,
+                            "value_fn": value_fn,
+                            "grad_fn": grad_fn
                         }
 
-                        # custom metric functions — receive full aux dict
-                        if cfg.logging_fn:
-                            for name, fn in cfg.logging_fn.items():
-                                metrics[name] = float(fn(**aux))
+                        optimizer.update(self.model, accum_grads, **extra_args)
+                        grad_norm = optax.global_norm(accum_grads)
+                        accum_grads = None
+                        global_step += 1
+                        avg_micro_loss = float(accum_loss) / cfg.gradient_accumulation_steps
+                        log_loss += avg_micro_loss
+                        accum_loss = 0.0
 
-                        logger.log(metrics, step=global_step)
-                        log_loss = 0.0
-                        t_start = time.time()
+                        # ── logging ──
+                        if global_step % cfg.logging_steps == 0:
+                            elapsed = time.time() - t_start
+                            avg_loss = log_loss / cfg.logging_steps
 
-                    # ── checkpointing (orbax handles rotation via max_to_keep) ──
-                    if cfg.save_steps and global_step % cfg.save_steps == 0:
-                        _, state = nnx.split(self.model)
-                        ckpt_mgr.save(global_step, args=ocp.args.StandardSave(state))
-                        ckpt_mgr.wait_until_finished()
-                        print(f"saved checkpoint → step {global_step}")
+                            # base metrics + anything from loss_fn's dict return
+                            metrics = {
+                                "step": global_step,
+                                "loss": avg_loss,
+                                "learning_rate": schedule(global_step).item(),
+                                "epoch": epoch,
+                                "grad_norm": grad_norm.item(),
+                                "steps_per_sec": cfg.logging_steps / elapsed,
+                            }
 
-                    # max steps reached
-                    if cfg.max_steps > 0 and global_step >= cfg.max_steps:
-                        break
+                            # custom metric functions — receive full aux dict
+                            if cfg.logging_fn:
+                                for name, fn in cfg.logging_fn.items():
+                                    metrics[name] = float(fn(**aux))
 
-            if cfg.max_steps > 0 and global_step >= cfg.max_steps:
-                break
+                            logger.log(metrics, step=global_step)
+                            training_metric.update_training_metrics(global_step, metrics)
+                            log_loss = 0.0
+                            t_start = time.time()
 
+                        # ── checkpointing (orbax handles rotation via max_to_keep) ──
+                        if cfg.save_steps and global_step % cfg.save_steps == 0:
+                            _, state = nnx.split(self.model)
+                            ckpt_mgr.save(global_step, args=ocp.args.StandardSave(state))
+                            ckpt_mgr.wait_until_finished()
+                            training_metric.save_training_metrics()
+                            tqdm.write(f"saved checkpoint → step {global_step}")
+
+                        if self.eval_dataset is not None and cfg.eval_strategy == "steps" and global_step % cfg.eval_steps == 0:
+                            _eval_logging()
+
+                        # max steps reached
+                        if cfg.max_steps > 0 and global_step >= cfg.max_steps:
+                            break
+
+                if cfg.max_steps > 0 and global_step >= cfg.max_steps:
+                    break
+
+            if self.eval_dataset is not None \
+                and cfg.eval_strategy == "epochs" \
+                    and ((epoch + 1) % cfg.eval_epochs == 0 if cfg.eval_epochs is not None else True):
+                _eval_logging()
+                
+            pbar.close()
         # ── save final ──
         _, state = nnx.split(self.model)
         ckpt_mgr.save(global_step, args=ocp.args.StandardSave(state))
         ckpt_mgr.wait_until_finished()
-        logger.log({"status": "complete", "total_steps": global_step}, step=global_step)
+        training_metric.save_training_metrics()
         logger.close()
         ckpt_mgr.close()
         print(f"training complete — {global_step} steps | saved → {output_dir}")
 
 
+
 class SFTTrainer(Trainer):
 
     """
+    # Experimental 
+    **use Trainer if face any problems**
+
     Supervised Fine-Tuning Trainer.
     Automates dataset tokenization, padding, and truncation.
+
     """
     def __init__(
         self,
@@ -268,6 +507,9 @@ class SFTTrainer(Trainer):
 
 class GRPOTrainer(Trainer):
     """
+    # Experimental 
+    **use Trainer if face any problems**
+    
     Group Relative Policy Optimization Trainer.
     (Placeholder for GRPO-specific group sampling and reward formulation)
     """
@@ -464,6 +706,9 @@ class GRPOTrainer(Trainer):
 
 class DSFTTrainer(Trainer):
     """
+    # Experimental 
+    **use Trainer if face any problems**
+    
     Diffusion Supervised Fine-Tuning Trainer.
     Automates image transformations and the discrete noise scheduler mapping.
     """
@@ -541,6 +786,9 @@ class DSFTTrainer(Trainer):
 
 class DPOTrainer(Trainer):
     """
+    # Experimental 
+    **use Trainer if face any problems**
+    
     Direct Preference Optimization Trainer.
     (Placeholder for DPO-specific dataset formatting and pairwise loss computation)
     """
@@ -644,7 +892,8 @@ class DPOTrainer(Trainer):
         if total_steps <= 0:
             if self._num_examples is None:
                 raise ValueError("max_steps must be set when using a streaming dataset")
-            steps_per_epoch = self._num_examples // (cfg.batch_size * cfg.gradient_accumulation_steps)
+            per_device_batch = cfg.per_device_batch_size
+            steps_per_epoch = self._num_examples // (per_device_batch * cfg.gradient_accumulation_steps)
             total_steps = steps_per_epoch * cfg.num_epochs
 
         opt = build_optimizer(cfg, total_steps)

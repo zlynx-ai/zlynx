@@ -7,7 +7,7 @@ A step-by-step guide to training a CNN on the MNIST handwritten digit dataset us
 > - Defining a model that inherits from `Z`
 > - Preparing a dataset for Zlynx's grain-based data pipeline
 > - Writing a JIT-compatible loss function
-> - Configuring `TrainerConfig` and `DatasetConfig`
+> - Configuring `TrainerConfig`
 > - Running training, evaluating accuracy, and saving/loading checkpoints
 
 ---
@@ -15,7 +15,7 @@ A step-by-step guide to training a CNN on the MNIST handwritten digit dataset us
 ## Prerequisites
 
 ```bash
-pip install zlynx torchvision
+uv pip install zlynx torchvision
 ```
 
 > [!NOTE]
@@ -34,7 +34,7 @@ from torchvision import datasets
 
 from flax import nnx
 from zlynx import Z
-from zlynx.trainer import Trainer, TrainerConfig, DatasetConfig
+from zlynx.trainer import Trainer, TrainerConfig
 ```
 
 | Import                      | Purpose                                                   |
@@ -45,7 +45,6 @@ from zlynx.trainer import Trainer, TrainerConfig, DatasetConfig
 | `nnx`                       | Flax NNX neural network layers (`Conv`, `Linear`, …)      |
 | `Z`                         | Zlynx base model — adds `save()` and `load()`             |
 | `Trainer` / `TrainerConfig` | Turn-key training loop with logging & checkpointing       |
-| `DatasetConfig`             | Controls shuffling, preprocessing, and the grain pipeline |
 
 ---
 
@@ -140,24 +139,21 @@ Each element is a `dict` with:
 - `"label"` — an integer `0–9`
 
 > [!TIP]
-> You can also pass a Hugging Face `datasets.Dataset`, a local dataset path string, or a plain Python `dict` of arrays. See `DatasetConfig` for the full list of accepted types.
+> You can also pass a Hugging Face `datasets.Dataset`, a local dataset path string, or a plain Python `dict` of arrays.
 
 ---
 
 ## 5 — Define Preprocessing
 
-The `preprocessing_fn` is called on **each individual example** (not on a batch). Grain applies it via `.map()` before batching, so the input is a single `dict`:
+The `processing_train_dataset_fn` in `TrainerConfig` is called on **each batch** before it reaches the loss function:
 
 ```python
-def preprocess(example):
-    image = example["image"].astype(jnp.float32) / 255.0   # normalize [0,255] → [0,1]
-    image = image[..., None]                                 # add channel dim: (28,28) → (28,28,1)
-    label = example["label"]
+def preprocess(batch):
+    image = batch["image"].astype(jnp.float32) / 255.0   # normalize [0,255] → [0,1]
+    image = image[..., None]                               # add channel dim: (B,28,28) → (B,28,28,1)
+    label = batch["label"]
     return {"image": image, "label": label}
 ```
-
-> [!IMPORTANT]
-> The function receives a **single example** — e.g. `{"image": array(28,28), "label": 5}` — not a batch. Grain handles batching automatically afterwards.
 
 ---
 
@@ -191,60 +187,43 @@ JAX requires explicit PRNG keys for reproducibility. We split a key and pass one
 
 ---
 
-## 8 — Configure Dataset & Trainer
+## 8 — Configure the Trainer
 
 ```python
-dsconfig = DatasetConfig(
-    shuffle=True,
-    shuffle_seed=42,
-    preprocessing_fn=preprocess,
-)
-
-trconfig = TrainerConfig(
-    batch_size=64,
+config = TrainerConfig(
+    per_device_batch_size=64,
     learning_rate=1e-3,
     num_epochs=3,
     logging_steps=100,
     save_steps=500,
     save_total_limit=2,
     output_dir="./output",
-    log_to=["stdout"],
-    sharding=False,            # single device
+    sharding=False,                        # single device
+    processing_train_dataset_fn=preprocess,
+    seed=42,
 )
 ```
 
-### TrainerConfig Reference
+### Key TrainerConfig Options
 
 | Option                        | Default      | Description                                                        |
 | ----------------------------- | ------------ | ------------------------------------------------------------------ |
-| `batch_size`                  | `8`          | Samples per training step                                          |
+| `per_device_batch_size`       | `1`          | Samples per device per training step                               |
 | `gradient_accumulation_steps` | `1`          | Micro-batches per optimizer update                                 |
-| `optimizer`                   | `"adamw"`    | `"adamw"` · `"adam"` · `"sgd"` · `"lion"` · `"galore_adamw"`       |
+| `optimizer`                   | `"adamw"`    | Any Optax optimizer name or callable                               |
 | `learning_rate`               | `5e-5`       | Peak learning rate                                                 |
 | `weight_decay`                | `0.0`        | L2 regularization strength                                         |
 | `max_grad_norm`               | `1.0`        | Global gradient clipping (`None` to disable)                       |
-| `lr_scheduler`                | `"cosine"`   | `"cosine"` · `"linear"` · `"constant"` · `"warmup_cosine"`         |
+| `lr_scheduler`                | `"cosine"`   | `"cosine"` · `"linear"` · `"constant"` · `"warmup_cosine_decay"`   |
 | `warmup_steps`                | `0`          | LR warmup steps (or use `warmup_ratio`)                            |
 | `num_epochs`                  | `1`          | Training epochs (ignored if `max_steps > 0`)                       |
 | `max_steps`                   | `-1`         | Hard step limit (`-1` = use epochs)                                |
-| `sharding`                    | `"auto"`     | `"auto"` · `"dp"` · `"fsdp"` · `"tp"` · `False` · `None` · `<int>` |
+| `sharding`                    | `"auto"`     | `"auto"` · `"ddp"` · `"fsdp"` · `False` · `None` · `<int>`       |
 | `save_steps`                  | `500`        | Checkpoint interval                                                |
 | `save_total_limit`            | `3`          | Max checkpoints kept (auto-rotated via Orbax)                      |
-| `log_to`                      | `["stdout"]` | `"stdout"` · `"wandb"` · `"tensorboard"` · `"json"`                |
+| `log_to`                      | `[]`         | `"wandb"` · `"tensorboard"`                                       |
 | `logging_fn`                  | `None`       | Custom metrics, e.g. `{"ppl": lambda **kw: jnp.exp(kw["loss"])}`   |
-
-### DatasetConfig Reference
-
-| Option             | Default   | Description                                          |
-| ------------------ | --------- | ---------------------------------------------------- |
-| `path`             | `None`    | HF dataset name or local path                        |
-| `subset`           | `None`    | Dataset config/subset name                           |
-| `split`            | `"train"` | Which split to load                                  |
-| `preprocessing_fn` | `None`    | **Per-example** transform applied via grain `.map()` |
-| `filter_fn`        | `None`    | Per-example filter predicate                         |
-| `shuffle`          | `True`    | Shuffle every epoch                                  |
-| `shuffle_seed`     | `42`      | Deterministic shuffle seed                           |
-| `num_workers`      | `4`       | Grain worker count                                   |
+| `processing_train_dataset_fn` | `None`       | Per-batch preprocessing function                                   |
 
 ---
 
@@ -253,10 +232,9 @@ trconfig = TrainerConfig(
 ```python
 trainer = Trainer(
     model=model,
-    dataset=train_data,
     loss_fn=loss_fn,
-    trconfig=trconfig,
-    dsconfig=dsconfig,
+    train_dataset=train_data,
+    config=config,
 )
 
 print("Starting training …")
@@ -322,7 +300,7 @@ model.save("./my_mnist_model")
 Because Flax NNX needs to reconstruct the model structure before loading weights, you must pass the **same init arguments** you used when creating the model:
 
 ```python
-model, _ = CNNClassifier.load(
+model = CNNClassifier.load(
     "./my_mnist_model",
     key=jax.random.key(0),    # any key will do — weights get overwritten
     num_classes=10,
@@ -330,8 +308,6 @@ model, _ = CNNClassifier.load(
 ```
 
 > [!NOTE]
-> `load()` returns a tuple `(model, processor)`. For models without a processor (like our CNN), the second element is `None` — hence the `_`.
->
 > The `key` argument can be any key — it's only used to initialize the model skeleton so Orbax knows what shapes to load. The saved weights overwrite everything.
 
 ### Loading a Trainer Checkpoint
@@ -354,7 +330,7 @@ output/checkpoints/
 To load a specific checkpoint:
 
 ```python
-model, _ = CNNClassifier.load(
+model = CNNClassifier.load(
     "./output/checkpoints/2814/default",
     key=jax.random.key(0),
     num_classes=10,
@@ -377,7 +353,7 @@ from torchvision import datasets
 
 from flax import nnx
 from zlynx import Z
-from zlynx.trainer import Trainer, TrainerConfig, DatasetConfig
+from zlynx.trainer import Trainer, TrainerConfig
 
 
 # ── Model ────────────────────────────────────────────────────
@@ -408,10 +384,10 @@ x_test,  y_test  = test_ds.data.numpy().astype(np.float32),  np.array(test_ds.ta
 train_data = [{"image": x_train[i], "label": y_train[i]} for i in range(len(x_train))]
 
 
-# ── Preprocessing (per-example) & loss (per-batch) ──────────
-def preprocess(example):
-    image = example["image"].astype(jnp.float32) / 255.0
-    return {"image": image[..., None], "label": example["label"]}
+# ── Preprocessing (per-batch) & loss (per-batch) ────────────
+def preprocess(batch):
+    image = batch["image"].astype(jnp.float32) / 255.0
+    return {"image": image[..., None], "label": batch["label"]}
 
 def loss_fn(model, batch):
     logits = model(batch["image"])
@@ -419,11 +395,11 @@ def loss_fn(model, batch):
 
 
 # ── Config ───────────────────────────────────────────────────
-dsconfig = DatasetConfig(shuffle=True, shuffle_seed=42, preprocessing_fn=preprocess)
-trconfig = TrainerConfig(
-    batch_size=64, learning_rate=1e-3, num_epochs=3,
+config = TrainerConfig(
+    per_device_batch_size=64, learning_rate=1e-3, num_epochs=3,
     logging_steps=100, save_steps=500, save_total_limit=2,
-    output_dir="./output", log_to=["stdout"], sharding=False,
+    output_dir="./output", sharding=False,
+    processing_train_dataset_fn=preprocess, seed=42,
 )
 
 # ── Train ────────────────────────────────────────────────────
@@ -432,8 +408,8 @@ model_key, _ = jax.random.split(key)
 model = CNNClassifier(model_key, num_classes=10)
 
 trainer = Trainer(
-    model=model, dataset=train_data, loss_fn=loss_fn,
-    trconfig=trconfig, dsconfig=dsconfig,
+    model=model, loss_fn=loss_fn,
+    train_dataset=train_data, config=config,
 )
 trainer.train()
 
@@ -460,10 +436,10 @@ model.save("./my_mnist_model")
 Now that you've trained your first model with Zlynx, try these:
 
 - **Bigger architectures** — add more conv blocks, batch normalization, or residual connections
-- **Hyperparameter tuning** — experiment with `learning_rate`, `batch_size`, `lr_scheduler`, `warmup_steps`
-- **Multi-device training** — set `sharding="auto"` (or `"dp"` / `"fsdp"`) to distribute across GPUs or TPUs
+- **Hyperparameter tuning** — experiment with `learning_rate`, `per_device_batch_size`, `lr_scheduler`, `warmup_steps`
+- **Multi-device training** — set `sharding="auto"` (or `"ddp"` / `"fsdp"`) to distribute across GPUs or TPUs
 - **PEFT fine-tuning** — apply LoRA, DoRA, VeRA, and more with `apply_peft()` from `zlynx.modules.peft`
 - **GaLore optimizer** — use `optimizer="galore_adamw"` to reduce optimizer memory via gradient low-rank projection
-- **Logging** — add `"wandb"`, `"tensorboard"`, or `"json"` to `log_to` for richer experiment tracking
+- **Logging** — add `"wandb"` or `"tensorboard"` to `log_to` for richer experiment tracking
 
 Check out the [Advanced Tutorials](./advanced/01_peft.md) to dive deeper!

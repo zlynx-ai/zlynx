@@ -6,10 +6,10 @@ import jax.numpy as jnp
 from flax import struct
 from typing_extensions import Callable
 
-from ..config import Cnf
+from ...config import Config
 
 @struct.dataclass
-class LlamaConfig(Cnf):
+class LlamaConfig(Config):
     arch: str = "LlamaLanguageModel"
     conf: str = "LlamaConfig"
     vocab_size: int = 80000

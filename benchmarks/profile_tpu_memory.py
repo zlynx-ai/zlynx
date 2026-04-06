@@ -68,7 +68,7 @@ baseline = report("0. Baseline")
 # ── Step 1: Create model ──
 model = LlamaLanguageModel(config, key=jax.random.key(0))
 
-from zlynx.trainer.utils import count_params, param_bytes
+from zlynx.trainer.process import count_params, param_bytes
 n_params = count_params(model)
 print(f"\nTotal params: {n_params:,} ({n_params/1e9:.3f}B)")
 print(f"Param memory (f32): {param_bytes(model, jnp.float32)/1e9:.3f} GB")
@@ -77,7 +77,7 @@ print(f"Param memory (bf16): {param_bytes(model, jnp.bfloat16)/1e9:.3f} GB")
 after_model = report("1. After model creation")
 
 # ── Step 2: FSDP ──
-from zlynx.trainer.utils import process_model
+from zlynx.trainer.process import process_model
 from zlynx.trainer.trainer_config import TrainerConfig
 
 trconfig = TrainerConfig(

@@ -6,16 +6,15 @@ Learn how to train any Zlynx model using the built-in `Trainer` — from data lo
 
 ## Overview
 
-The Zlynx training workflow has four components:
+The Zlynx training workflow has three components:
 
 ```
-Dataset → DatasetConfig → Loss Function → TrainerConfig → Trainer.train()
+Dataset → Loss Function → TrainerConfig → Trainer.train()
 ```
 
 1. **Dataset** — your raw data (list, HF dataset, or path)
-2. **DatasetConfig** — how to shuffle, preprocess, and feed data
-3. **Loss function** — `(model, batch) → scalar`
-4. **TrainerConfig** — hyperparameters, logging, checkpointing
+2. **Loss function** — `(model, batch) → scalar`
+3. **TrainerConfig** — hyperparameters, data processing, logging, checkpointing
 
 ---
 
@@ -43,58 +42,48 @@ You can use any key names — just be consistent with your preprocessing and los
 
 ---
 
-## Step 2: Configure the Dataset
+## Step 2: Configure Data Processing
+
+Data processing is configured directly inside `TrainerConfig`:
 
 ```python
-from zlynx.trainer import DatasetConfig
+from zlynx.trainer import TrainerConfig
 
-dsconfig = DatasetConfig(
-    shuffle=True,
-    shuffle_seed=42,
-    preprocessing_fn=preprocess,   # optional
-    filter_fn=None,                # optional
+config = TrainerConfig(
+    processing_train_dataset_fn=preprocess,    # per-batch transform
+    seed=42,
+    num_workers=4,
 )
 ```
 
-### The `preprocessing_fn`
+### The `processing_train_dataset_fn`
 
-This function is called on **each individual example** before batching. It receives a single dict and must return a dict:
-
-```python
-def preprocess(example):
-    # example = {"input": array(28, 28), "target": 5}
-    image = example["input"].astype(jnp.float32) / 255.0
-    image = image[..., None]   # add channel dim
-    return {"input": image, "target": example["target"]}
-```
-
-> [!IMPORTANT]
-> `preprocessing_fn` is applied **per-example**, not per-batch. Zlynx uses Google Grain internally: it runs `.map(preprocessing_fn)` first, then `.batch()` to stack examples together.
-
-### The `filter_fn`
-
-An optional predicate to drop examples:
+This function preprocesses each batch before it reaches `loss_fn`:
 
 ```python
-def filter_fn(example):
-    return example["target"] < 5   # only keep digits 0–4
+def preprocess(batch):
+    images = batch["input"].astype(jnp.float32) / 255.0
+    images = images[..., None]   # add channel dim
+    return {"input": images, "target": batch["target"]}
 ```
 
 ### Loading HF Datasets Directly
 
-Instead of preparing data yourself, pass a dataset name and configure in `DatasetConfig`:
+Pass a dataset name string as the dataset, and configure with `TrainerConfig`:
 
 ```python
-dsconfig = DatasetConfig(
-    path="mnist",              # HF dataset name
-    split="train",
-    subset=None,               # optional config name
-    preprocessing_fn=preprocess,
-    shuffle=True,
+config = TrainerConfig(
+    train_split="train",
+    train_subset="default",
+    processing_train_dataset_fn=preprocess,
 )
 
-# Then pass the path string as the dataset:
-trainer = Trainer(model=model, dataset="mnist", ..., dsconfig=dsconfig)
+trainer = Trainer(
+    model=model,
+    loss_fn=loss_fn,
+    train_dataset="mnist",
+    config=config,
+)
 ```
 
 ---
@@ -135,7 +124,7 @@ def loss_fn(model, batch):
 Then use `logging_fn` in `TrainerConfig` to log those extra values:
 
 ```python
-trconfig = TrainerConfig(
+config = TrainerConfig(
     ...,
     logging_fn={
         "accuracy": lambda **kw: kw["accuracy"],
@@ -150,9 +139,9 @@ trconfig = TrainerConfig(
 ```python
 from zlynx.trainer import TrainerConfig
 
-trconfig = TrainerConfig(
+config = TrainerConfig(
     # Batch
-    batch_size=64,
+    per_device_batch_size=64,
     gradient_accumulation_steps=1,
 
     # Optimizer
@@ -162,7 +151,7 @@ trconfig = TrainerConfig(
     max_grad_norm=1.0,
 
     # Schedule
-    lr_scheduler="warmup_cosine",
+    lr_scheduler="warmup_cosine_decay",
     warmup_steps=100,
 
     # Duration
@@ -176,7 +165,7 @@ trconfig = TrainerConfig(
 
     # Logging
     logging_steps=100,
-    log_to=["stdout"],
+    log_to=["wandb"],
 
     # Device
     sharding=False,                # single device (see sharding tutorial)
@@ -185,30 +174,34 @@ trconfig = TrainerConfig(
 
 ### Optimizers
 
+All Optax core and contrib optimizers are supported. Common ones:
+
 | Value            | Optimizer                            |
 | ---------------- | ------------------------------------ |
 | `"adamw"`        | AdamW (default)                      |
 | `"adam"`         | Adam                                 |
 | `"sgd"`          | SGD                                  |
 | `"lion"`         | Lion                                 |
+| `"muon"`         | Muon                                 |
 | `"galore_adamw"` | AdamW + Gradient Low-Rank Projection |
 
 ### Learning Rate Schedules
 
-| Value             | Behavior                     |
-| ----------------- | ---------------------------- |
-| `"constant"`      | Fixed learning rate          |
-| `"linear"`        | Linear decay to 0            |
-| `"cosine"`        | Cosine decay to 0 (default)  |
-| `"warmup_cosine"` | Linear warmup → cosine decay |
+| Value                     | Behavior                     |
+| ------------------------- | ---------------------------- |
+| `"constant"`              | Fixed learning rate          |
+| `"linear"`                | Linear decay to 0            |
+| `"cosine"`                | Cosine decay to 0 (default)  |
+| `"warmup_cosine_decay"`   | Linear warmup → cosine decay |
+| `"warmup_constant"`       | Linear warmup → constant     |
 
 ### Gradient Accumulation
 
 Simulate larger batch sizes on limited hardware:
 
 ```python
-trconfig = TrainerConfig(
-    batch_size=16,                       # micro-batch
+config = TrainerConfig(
+    per_device_batch_size=16,            # micro-batch
     gradient_accumulation_steps=4,       # effective batch = 16 × 4 = 64
 )
 ```
@@ -218,18 +211,19 @@ The Trainer handles accumulating gradients across micro-batches and averaging th
 ### Logging Backends
 
 ```python
-trconfig = TrainerConfig(
-    log_to=["stdout", "wandb", "tensorboard", "json"],
+config = TrainerConfig(
+    log_to=["wandb", "tensorboard"],
     run_name="my-experiment",
 )
 ```
 
 | Backend         | Output                                     |
 | --------------- | ------------------------------------------ |
-| `"stdout"`      | Prints to console                          |
 | `"wandb"`       | Weights & Biases (auto-inits a run)        |
 | `"tensorboard"` | TensorBoard logs in `output_dir/tb_logs/`  |
-| `"json"`        | JSONL file at `output_dir/train_log.jsonl` |
+
+> [!TIP]
+> In Jupyter notebooks, the Trainer automatically switches to a live-updating `pandas.DataFrame` display instead of stdout.
 
 ---
 
@@ -240,10 +234,9 @@ from zlynx.trainer import Trainer
 
 trainer = Trainer(
     model=model,
-    dataset=train_data,
     loss_fn=loss_fn,
-    trconfig=trconfig,
-    dsconfig=dsconfig,
+    train_dataset=train_data,
+    config=config,
 )
 
 trainer.train()
@@ -274,14 +267,13 @@ training complete — 2814 steps | saved → ./output
 
 ```python
 # Minimal training setup
-from zlynx.trainer import Trainer, TrainerConfig, DatasetConfig
+from zlynx.trainer import Trainer, TrainerConfig
 
 trainer = Trainer(
     model=model,
-    dataset=data,                           # list, HF dataset, or string
     loss_fn=lambda model, batch: ...,       # (model, batch) → scalar
-    trconfig=TrainerConfig(batch_size=32, num_epochs=5),
-    dsconfig=DatasetConfig(shuffle=True),
+    train_dataset=data,                     # list, HF dataset, or string
+    config=TrainerConfig(per_device_batch_size=32, num_epochs=5),
 )
 trainer.train()
 ```
