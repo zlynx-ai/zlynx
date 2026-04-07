@@ -9,11 +9,7 @@ import optax
 from tqdm import tqdm
 import sys
 
-from .trainer_config import (
-    SFTConfig, 
-    TrainerConfig, GRPOConfig, 
-    DPOConfig, DSFTConfig
-)
+from .trainer_config import TrainerConfig
 from .loss_fn import (
     causal_lm_loss, compute_loss_and_grads, 
     grpo_loss_fn, dpo_loss_fn, 
@@ -382,10 +378,21 @@ class Trainer:
                                 "steps_per_sec": cfg.logging_steps / elapsed,
                             }
 
+                            if cfg.logging_aux:
+                                for k, v in aux.items():
+                                    if hasattr(v, "item") and jnp.isscalar(v):
+                                        metrics[k] = v.item()
+                                    elif isinstance(v, (int, float)):
+                                        metrics[k] = v
+
                             # custom metric functions — receive full aux dict
                             if cfg.logging_fn:
                                 for name, fn in cfg.logging_fn.items():
-                                    metrics[name] = float(fn(**aux))
+                                    result = fn(**aux)
+                                    if hasattr(result, "item") and jnp.isscalar(result):
+                                        metrics[name] = result.item()
+                                    elif isinstance(result, (int, float)):
+                                        metrics[name] = result
 
                             logger.log(metrics, step=global_step)
                             training_metric.update_training_metrics(global_step, metrics)

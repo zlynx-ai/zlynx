@@ -252,6 +252,6 @@ def grain_from_source(
             else pipeline.to_iter_dataset()
         )
     if batch_size is not None:
-        pipeline = pipeline.batch(batch_size)
+        pipeline = pipeline.batch(batch_size, drop_remainder=True)
 
     return pipeline

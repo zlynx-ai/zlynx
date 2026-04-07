@@ -79,6 +79,7 @@ class TrainerConfig:
     log_to: list[str] = field(default_factory=list)  # ["wandb", "tensorboard"]
     run_name: str | None = None
     logging_fn: Dict[str, Callable] | None = None  # custom metrics: {"perplexity": lambda **kw: jnp.exp(kw["loss"])}
+    logging_aux: bool = True                       # log aux return from loss function immediately
 
     # Optional custom optimizer builder.
     #

@@ -167,7 +167,7 @@ class Z(nnx.Module):
     @classmethod
     def load(
         cls, path: str | Path, 
-        *,
+        *args,
         dtype: str | None=None, 
         config=None, 
         config_map: Optional[Dict]=None,
@@ -179,7 +179,10 @@ class Z(nnx.Module):
         path = Path(path).resolve()
 
         if config is None:
-            config = cls.load_config(path, config_map=config_map)
+            try:
+                config = cls.load_config(path, config_map=config_map)
+            except Exception as e:
+                print(f"warning: {e}")
 
         if cls is Z:
             arch_name = None
@@ -201,11 +204,10 @@ class Z(nnx.Module):
         
         logging.info(f"{arch.__name__} model class obtained")
 
-
         if config is None:
-            model = nnx.eval_shape(lambda: arch(**kwargs))
+            model = nnx.eval_shape(lambda: arch(*args, **kwargs))
         else:
-            model = nnx.eval_shape(lambda: arch(config=config, **kwargs))
+            model = nnx.eval_shape(lambda: arch(config=config, *args, **kwargs))
         
         gdef, state = nnx.split(model)
 
