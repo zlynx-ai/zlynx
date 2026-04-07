@@ -250,6 +250,14 @@ class Trainer:
                 "eval_step": global_step,
                 "loss": 0,
             }
+
+            if cfg.logging_aux:
+                for k, v in aux.items():
+                    if hasattr(v, "item") and jnp.isscalar(v):
+                        metrics[k] = 0
+                    elif isinstance(v, (int, float)):
+                        metrics[k] = 0
+                        
             if cfg.logging_fn:
                 for name, fn in cfg.logging_fn.items():
                     eval_metrics[name] = 0
@@ -267,6 +275,13 @@ class Trainer:
                 ) or compute_loss_and_grads_fn(self.model, self.loss_fn, batch)
                 
                 eval_metrics["loss"] += (hasattr(loss, "item") and loss.item()) or loss
+
+                if cfg.logging_aux:
+                    for k, v in aux.items():
+                        if hasattr(v, "item") and jnp.isscalar(v):
+                            metrics[k] += v.item()
+                        elif isinstance(v, (int, float)):
+                            metrics[k] += v
 
                 if cfg.logging_fn:
                     for name, fn in cfg.logging_fn.items():

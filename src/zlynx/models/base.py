@@ -176,6 +176,57 @@ class Z(nnx.Module):
         format: Literal["orbax", "safetensors"]="orbax",
         **kwargs
     ) -> Tuple["Z", Optional[Any]]:
+        
+        """
+        Load a model from a checkpoint.
+
+        This method rebuilds the model by calling the class constructor first,
+        then restores checkpoint parameters into that instance. Because of that,
+        any extra `*args` and `**kwargs` passed to `load()` are forwarded to
+        the model constructor (`__init__`), and required constructor arguments
+        must still be provided at load time.
+
+        Args:
+            path:
+                Path to the checkpoint directory or file.
+
+            *args:
+                Extra positional arguments forwarded to the model constructor.
+
+            dtype:
+                Optionally cast model parameters to a different dtype while loading.
+
+            config:
+                Optional model config object to use during reconstruction.
+                Some models, such as those in `zlynx.models`, may save and load
+                a dataclass-based config together with the checkpoint.
+
+            config_map:
+                Optional mapping for config field names when loading checkpoints
+                across implementations that use equivalent configs with different
+                key names. For example, some Hugging Face-style models may share
+                the same logical config structure but use different field names.
+
+            module_map:
+                Optional mapping for module / parameter names when loading between
+                models with the same architecture but different internal naming.
+                For example, one model may use `q_proj` while another uses `w_q`.
+
+            sharding:
+                Optionally load the model with sharding applied.
+
+            format:
+                Checkpoint format to load. This must be specified when the target
+                directory may contain multiple checkpoint formats, such as both
+                `orbax` and `safetensors`.
+
+            **kwargs:
+                Extra keyword arguments forwarded to the model constructor.
+
+        Returns:
+            The loaded model instance.
+        """
+
         path = Path(path).resolve()
 
         if config is None:
