@@ -2,7 +2,9 @@ from typing import NamedTuple, Any
 import optax
 import jax
 import jax.numpy as jnp
+import numpy as np
 import inspect
+from sklearn.utils.extmath import randomized_svd
 
 from .trainer import TrainerConfig
 
@@ -178,8 +180,8 @@ def galore_wrapper(inner_opt: optax.GradientTransformation, r: int = 128, update
     This reduces the memory footprint of optimizer states (like Adam's moments)
     by projecting gradients into a low-rank subspace.
 
-    The SVD-based projector update runs outside JIT via `update_galore_projectors()`.
-    The optimizer's update_fn only does the cheap project → inner opt → project back.
+    SVD-based projector updates are triggered automatically every `update_proj_gap`
+    steps inside update_fn, which runs outside JIT in the trainer.
     """
     def init_fn(params):
         def _get_lr_shape(p):
@@ -204,7 +206,11 @@ def galore_wrapper(inner_opt: optax.GradientTransformation, r: int = 128, update
         return GaloreState(inner_state=inner_state, projector=projector, step=jnp.array(0, dtype=jnp.int32))
 
     def update_fn(updates, state, params=None):
-        # Project gradients down using current projectors (no SVD here)
+        # Update projectors via SVD every update_proj_gap steps (runs outside JIT)
+        if params is not None and int(state.step) % update_proj_gap == 0:
+            state = update_galore_projectors(state, updates, params, r=r)
+
+        # Project gradients down using current projectors
         def _project_down(update, param, proj):
             if proj is None:
                 return update
@@ -293,11 +299,12 @@ def update_galore_projectors(galore_state, grads, params, r: int = 128):
         param = param_leaves[gi]
         gi += 1
         m, n = param.shape
-        U, S, Vh = jnp.linalg.svd(grad.astype(jnp.float32), full_matrices=False)
+        grad_np = np.asarray(grad.astype(jnp.float32))
+        U, S, Vh = randomized_svd(grad_np, n_components=r, random_state=None)
         if m < n:
-            new_proj_flat.append(Vh[:r, :].T.astype(grad.dtype))
+            new_proj_flat.append(jnp.asarray(Vh.T).astype(grad.dtype))
         else:
-            new_proj_flat.append(U[:, :r].astype(grad.dtype))
+            new_proj_flat.append(jnp.asarray(U).astype(grad.dtype))
 
     new_projectors = proj_treedef.unflatten(new_proj_flat)
 
@@ -353,6 +360,21 @@ def build_optimizer(config: "TrainerConfig", total_steps: int):
         kwargs["learning_rate"] = schedule
 
     inner = opt_fn(**kwargs)
+
+    # Wrap only the base optimizer with GaLore — before weight decay
+    is_galore = isinstance(config.optimizer, str) and config.optimizer.startswith("galore_")
+    if is_galore:
+        galore_kwargs = {
+            k.removeprefix("galore_"): v
+            for k, v in config.optimizer_kwargs.items()
+            if k.startswith("galore_")
+        }
+        inner = galore_wrapper(
+            inner,
+            r=galore_kwargs.get("r", 128),
+            update_proj_gap=galore_kwargs.get("update_proj_gap", 200),
+            scale=galore_kwargs.get("scale", 1.0),
+        )
 
     if config.weight_decay:
         opt = optax.chain(

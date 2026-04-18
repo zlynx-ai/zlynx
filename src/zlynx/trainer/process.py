@@ -141,7 +141,6 @@ def process_model(model, config: TrainerConfig):
 
         state = jax.tree.map(shard_param, state)
         nnx.update(model, state)
-        config.sharding = "test"
         return model, config
     
     # ── tensor parallelism ──
@@ -259,7 +258,7 @@ def process_dataset(dataset, config: TrainerConfig, is_eval=False):
     pipeline = grain_from_source(
         source,
         read_opts=read_opts,
-        batch_size=config.per_device_batch_size,
+        batch_size=config.batch_size,
         seed=seed
     )
 

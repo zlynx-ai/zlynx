@@ -9,8 +9,15 @@ class TrainerConfig:
     jit_loss_fn: bool = True
 
     # ── batch / accumulation ──
-    per_device_batch_size: int = 1
-    gradient_accumulation_steps: int = 1  # effective batch = per_device_batch_size × this
+    # `batch_size` is the number of samples fed into **one model replica** per
+    # micro-step. With sharding="ddp" on N devices there are N replicas, so the
+    # effective batch becomes batch_size × N × gradient_accumulation_steps.
+    # With "fsdp"/"tp"/"pp"/single-device there is only 1 replica (the model is
+    # sharded, not replicated), so effective batch = batch_size × gradient_accumulation_steps.
+    # For sharding=None (custom user-managed mesh) the replica count is unknown
+    # and the trainer does not attempt to infer it.
+    batch_size: int = 1
+    gradient_accumulation_steps: int = 1  # effective batch = batch_size × replicas × this
 
     # ── dataset ──
     # ── use when specify train_dataset/eval_dataset as str ──
@@ -35,7 +42,7 @@ class TrainerConfig:
     prefetch_buffer_size: int = 1_000
 
     # ── optimizer ──
-    optimizer: str | Callable = "adamw"                     # "adamw", "sgd", "lion", "muon", ...
+    optimizer: str | Callable = "adamw"                     # "adamw", "sgd", ...
     optimizer_kwargs: dict = field(default_factory=dict)  # extra kwargs forwarded to optax
     learning_rate: float = 5e-5
     weight_decay: float = 0.0
@@ -57,16 +64,13 @@ class TrainerConfig:
     eval_max_steps: int = -1                        # -1 = whole eval_dataset but needed > 0 for `eval_streaming = True`
     eval_steps: int | None = None                   # None = eval every epoch if there is `eval_dataset`
     eval_epochs: int | None = None                  # None = eval every epoch if there is `eval_dataset`
-    eval_per_device_batch_size: int | None = None   # None = same as per_device_batch_size
+    eval_batch_size: int | None = None   # None = same as batch_size
 
     # ── precision ──
-    dtype: str = "bfloat16"                      # param / compute dtype
-    grad_dtype: str | None = None                # gradient dtype (None = same as dtype)
     remat: bool = False                          # recompute activations to save memory (jax.remat)
 
     # ── sharding / parallelism ──
     sharding: str | int | bool | None = "auto"     # "auto", None (skip), "fsdp", "tp", "dp", int (device ID), False (single)
-    mesh_shape: tuple[int, ...] | None = None    # custom device mesh shape
 
     # ── checkpointing ──
     output_dir: str = "./output"

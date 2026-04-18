@@ -8,7 +8,29 @@ from .trainer_config import TrainerConfig
 import datetime
 
 
-def _get_training_banner_args(config: TrainerConfig, model, total_steps: int) -> dict[str, Any]:
+def _detect_sharding(model) -> str | None:
+    """Return a short description of actual param sharding, or None if single-device."""
+    try:
+        from flax import nnx
+        leaves = jax.tree_util.tree_leaves(nnx.state(model, nnx.Param))
+    except Exception:
+        return None
+    for leaf in leaves:
+        s = getattr(leaf, "sharding", None)
+        if s is None:
+            continue
+        devs = getattr(s, "device_set", None)
+        if devs is None or len(devs) <= 1:
+            continue
+        spec = getattr(s, "spec", None)
+        if spec is not None and any(p is not None for p in spec):
+            axes = ",".join(str(p) if p is not None else "·" for p in spec)
+            return f"partitioned[{axes}] across {len(devs)} devices"
+        return f"replicated across {len(devs)} devices"
+    return None
+
+
+def _get_training_banner_args(config: TrainerConfig, total_steps: int, model: Any = None) -> dict[str, Any]:
     devices = jax.devices()
     num_devices = len(devices)
     device = devices[0] if devices else None
@@ -20,38 +42,74 @@ def _get_training_banner_args(config: TrainerConfig, model, total_steps: int) ->
             device = devices[sharding]
             num_devices = 1
             sharding_display = f"{device_name}[{sharding}]" if device_name != "-" else f"{sharding}"
-            
+
         elif sharding is None:
             sharding_display = "None"
+
         else:
             sharding_display = str(sharding)
+
     else:
-        num_devices = 1
+        if sharding is False:
+            num_devices = 1
+
         sharding_display = f"{sharding}"
 
-    per_device_batch = config.per_device_batch_size
+    if model is not None:
+        detected = _detect_sharding(model)
+        if detected is not None:
+            sharding_display = f"{sharding_display} → {detected}"
+
+    batch = config.batch_size
     grad_accum = config.gradient_accumulation_steps
-    global_batch = per_device_batch * max(num_devices, 1) * grad_accum
-    precision = (
-        config.dtype
-        if config.grad_dtype in (None, config.dtype)
-        else f"{config.dtype} params / {config.grad_dtype} grads"
+
+    if sharding == "ddp":
+        replicas = num_devices
+    else:
+        replicas = 1
+
+    effective_batch = batch * replicas * grad_accum
+    parts = [f"{batch}"]
+    if replicas > 1:
+        parts.append(f"{replicas} replicas")
+    if grad_accum > 1:
+        parts.append(f"{grad_accum} accum")
+    effective_str = " × ".join(parts) + f" = {effective_batch}" if len(parts) > 1 else f"{effective_batch}"
+
+    warmup = config.warmup_steps or (
+        int(config.warmup_ratio * total_steps) if config.warmup_ratio else 0
     )
+    scheduler_str = config.lr_scheduler + (f" (warmup {warmup})" if warmup else "")
+
+    opt_str = str(config.optimizer)
+    if config.optimizer_kwargs:
+        pad = " " * (16 + 3)  # key_width + " : "
+        prefix = (
+            f"{config.optimizer.split('_', 1)[0]}_"
+            if isinstance(config.optimizer, str) and "_" in config.optimizer
+            else ""
+        )
+        extras = f",\n{pad}".join(
+            f"{k.removeprefix(prefix)}={v}" for k, v in config.optimizer_kwargs.items()
+        )
+        opt_str = f"{opt_str}\n{pad}{extras}"
+    if config.weight_decay:
+        opt_str += f"  wd={config.weight_decay}"
 
     return {
         "num_devices": num_devices,
         "device_name": device_name,
         "sharding": sharding_display,
-        "precision": precision,
         "remat": config.remat,
-        "train_batch": per_device_batch,
+        "batch": batch,
         "grad_accum": grad_accum,
-        "global_batch": f"{per_device_batch} x {grad_accum} = {global_batch} / device",
-        "optimizer": config.optimizer,
+        "effective_batch": effective_str,
+        "optimizer": opt_str,
         "learning_rate": config.learning_rate,
-        "scheduler": config.lr_scheduler,
+        "scheduler": scheduler_str,
         "epochs": config.num_epochs,
         "max_steps": total_steps,
+        "output_dir": config.output_dir,
     }
 
 class TrainingMetric:
@@ -63,7 +121,7 @@ class TrainingMetric:
             "start_date": start_date,
             "end_date": datetime.datetime.now(),
             "optimizer": config.optimizer,
-            "per_device_batch_size": config.per_device_batch_size,
+            "batch_size": config.batch_size,
             "gradient_accumulation_steps": config.gradient_accumulation_steps,
             "learning_rate": config.learning_rate,
             "lr_scheduler": config.lr_scheduler,
@@ -71,8 +129,6 @@ class TrainingMetric:
             "warmup_ratio": config.warmup_ratio,
             "max_steps": config.max_steps,
             "num_epochs": config.num_epochs,
-            "dtype": config.dtype,
-            "grad_dtype": config.dtype if config.grad_dtype is None else config.grad_dtype,
             "remat": config.remat,
             "sharding": config.sharding,
             "steps": {},
@@ -91,6 +147,7 @@ class TrainingMetric:
     
     def save_training_metrics(self):
         model_path = Path(self.config.output_dir).resolve()
+        self.training_metrics['end_date'] = datetime.datetime.now()
         with open(model_path / "training_metrics.json", 'w') as f:
             json.dump(self.training_metrics, f, default=str, indent=2)
 
@@ -130,16 +187,16 @@ def build_training_banner(
     num_devices="-",
     device_name="-",
     sharding="-",
-    precision="-",
     remat=None,
-    train_batch=None,
+    batch=None,
     grad_accum=None,
-    global_batch=None,
+    effective_batch=None,
     optimizer="-",
     learning_rate=None,
     scheduler=None,
     epochs=None,
     max_steps=None,
+    output_dir=None,
 ):
     width = 64
     key_width = 16
@@ -181,18 +238,19 @@ def build_training_banner(
         row("Parameters", f"{format_num(total_params)} total | {format_num(trainable_params)} trainable"),
         row("Devices", f"{num_devices} x {device_name}"),
         row("Sharding", sharding),
-        row("Precision", precision),
         row("Remat", format_flag(remat)),
         "",
-        row("Train batch", f"{train_batch} / device" if train_batch is not None else "-"),
+        row("Batch size", f"{batch}" if batch is not None else "-"),
         row("Grad accum", grad_accum if grad_accum is not None else "-"),
-        row("Global batch", global_batch if global_batch is not None else "-"),
+        row("Effective batch", effective_batch if effective_batch is not None else "-"),
         "",
         row("Optimizer", optimizer),
         row("Learning rate", format_lr(learning_rate)),
         row("Scheduler", scheduler),
         row("Epochs", epochs if epochs is not None else "-"),
-        row("Max steps", max_steps if max_steps is not None else "-"),
+        row("Max steps", max_steps if max_steps is not None and max_steps > 0 else "-"),
+        "",
+        row("Output dir", output_dir if output_dir else "-"),
         bottom,
     ]
     return "\n".join(lines)
@@ -224,10 +282,6 @@ class Logger:
             import wandb
             if not wandb.run:
                 wandb.init(project=run_name or "zlynx", name=run_name)
-
-        # if "json" in backends:
-        #     self._json_path = self.output_dir / "train_log.jsonl"
-        #     self._json_path.parent.mkdir(parents=True, exist_ok=True)
 
         self.is_in_notebook = self.in_notebook()
         if self.is_in_notebook:
@@ -286,13 +340,6 @@ class Logger:
         if "wandb" in self.backends:
             import wandb
             wandb.log(metrics, step=step)
-
-        # if "json" in self.backends and self._json_path:
-        #     record = {"step": step, **{k: float(v) if isinstance(v, (int, float, jnp.ndarray)) else v for k, v in metrics.items()}}
-        #     with open(self._json_path, "a") as f:
-        #         f.write(json.dumps(record) + "\n")
-
-    
         
     def close(self):
         if self._tb_writer:

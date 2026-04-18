@@ -1,4 +1,3 @@
-
 from pathlib import Path
 import time
 import jax, jax.numpy as jnp
@@ -16,7 +15,7 @@ from .loss_fn import (
     token_log_probs, diffusion_loss
 )
 from .process import process_model, process_dataset, apply_remat
-from .optim import build_optimizer, find_galore_state, set_galore_state, update_galore_projectors
+from .optim import build_optimizer
 from .logger import Logger, TrainingMetric, print_training_banner, _get_training_banner_args
 
 # ─────────────────────────────────────────────────────────────
@@ -127,17 +126,9 @@ class Trainer:
         if config.remat:
             self.model = apply_remat(self.model)
 
-    def train(self):
-        """Run the full training loop.
+        self._prepare_train_step()
 
-        Handles:
-            - Optimizer and LR schedule construction from config.
-            - Gradient accumulation over micro-batches.
-            - Multi-backend logging (stdout, TensorBoard, W&B, JSON).
-            - Custom metric functions via trconfig.logging_fn.
-            - Orbax CheckpointManager with automatic rotation.
-            - Early stop at max_steps if set.
-        """
+    def _prepare_train_step(self):
         cfg = self.config
 
         # ── estimate total steps ──
@@ -145,16 +136,17 @@ class Trainer:
         if total_steps <= 0:
             if self._num_train_examples is None:
                 raise ValueError("`max_steps` must be set when using a streaming dataset")
-            per_device_batch = cfg.per_device_batch_size
+            per_device_batch = cfg.batch_size
             steps_per_epoch = self._num_train_examples // (per_device_batch * cfg.gradient_accumulation_steps)
             total_steps = steps_per_epoch * cfg.num_epochs
 
+        eval_total_steps = None
         if self.eval_dataset is not None:
             if cfg.eval_max_steps <= 0:
                 if self._num_eval_examples is None:
                     raise ValueError("`eval_max_steps` must be set when using a eval streaming dataset")
                 
-                eval_batch_size = cfg.eval_per_device_batch_size or cfg.per_device_batch_size
+                eval_batch_size = cfg.eval_batch_size or cfg.batch_size
                 eval_total_steps = self._num_eval_examples // eval_batch_size
             else:
                 eval_total_steps = cfg.eval_max_steps
@@ -183,19 +175,6 @@ class Trainer:
         model_name = type(self.model).__name__
         training_metric = TrainingMetric(model_name, self.config)
 
-        # ── detect GaLore for projector updates ──
-        galore_idx, galore_st = find_galore_state(optimizer.opt_state)
-        is_galore = galore_st is not None
-        galore_gap = cfg.optimizer_kwargs.get("galore_update_proj_gap", 200) if is_galore else 0
-        galore_r = cfg.optimizer_kwargs.get("galore_r", 128) if is_galore else 0
-
-        # ── training loop ──
-        global_step = 0
-        micro_step = 0
-        accum_loss = 0.0
-        accum_grads = None
-        log_loss = 0.0
-        t_start = time.time()
 
         sample_batch = next(iter(self.train_dataset))
         sample_batch = cfg.processing_train_dataset_fn(sample_batch) \
@@ -223,7 +202,7 @@ class Trainer:
                     "\n"
                     "To fix this, you can:\n"
                     "  1. Preprocess your dataset so every field passed to `loss_fn` is JAX-compatible.\n"
-                    "  2. Pass a preprocessing function to `preprocessing_dataset_fn` in `TrainerConfig`\n"
+                    "  2. Pass a processing function to `processing_train_dataset_fn` in `TrainerConfig`\n"
                     "     to transform dataset samples before they are passed to `loss_fn`.\n"
                     "  3. Set `jit_loss_fn=False` in `TrainerConfig` to disable JIT for the loss function."
                 )
@@ -238,11 +217,58 @@ class Trainer:
             leaf.size for leaf in jax.tree.leaves(trainable_state) if hasattr(leaf, "size")
         )
 
+        self.model_name = model_name
+        self.total_params = total_params
+        self.trainable_params = trainable_params
+        self.total_steps = total_steps
+        self.eval_total_steps = eval_total_steps
+        self.compute_loss_and_grads_fn = compute_loss_and_grads_fn
+        self.optimizer = optimizer
+        self.schedule = schedule
+        self.logger = logger
+        self.training_metric = training_metric
+        self.ckpt_mgr = ckpt_mgr
+        self.output_dir = output_dir
+
+    def train(self):
+        """Run the full training loop.
+
+        Handles:
+            - Optimizer and LR schedule construction from config.
+            - Gradient accumulation over micro-batches.
+            - Multi-backend logging (stdout, TensorBoard, W&B, JSON).
+            - Custom metric functions via trconfig.logging_fn.
+            - Orbax CheckpointManager with automatic rotation.
+            - Early stop at max_steps if set.
+        """
+        cfg = self.config
+
+        # ── training loop ──
+        global_step = 0
+        micro_step = 0
+        accum_loss = 0.0
+        accum_grads = None
+        log_loss = 0.0
+        t_start = time.time()
+
+        model_name = self.model_name
+        total_params = self.total_params
+        trainable_params = self.trainable_params
+        total_steps = self.total_steps
+        eval_total_steps = self.eval_total_steps
+        compute_loss_and_grads_fn = self.compute_loss_and_grads_fn
+        optimizer = self.optimizer
+        schedule = self.schedule
+        logger = self.logger
+        training_metric = self.training_metric
+        ckpt_mgr = self.ckpt_mgr
+        output_dir = self.output_dir
+        
         print_training_banner(
             model_name=model_name,
             total_params=total_params,
             trainable_params=trainable_params,
-            **_get_training_banner_args(cfg, self.model, total_steps),
+            **_get_training_banner_args(cfg, total_steps, model=self.model),
         )
 
         def _eval_logging():
@@ -324,7 +350,6 @@ class Trainer:
                     accum_loss = accum_loss + loss
 
                     pbar.set_description(f"step {global_step + 1}/{total_steps}")
-                    pbar.update(1)
 
                     # ── update when accumulation is complete ──
                     if micro_step % cfg.gradient_accumulation_steps == 0:
@@ -334,13 +359,6 @@ class Trainer:
                                 lambda g: g / cfg.gradient_accumulation_steps, accum_grads
                             )
 
-                        # ── GaLore projector update (outside JIT) ──
-                        if is_galore and global_step % galore_gap == 0:
-                            params = nnx.state(self.model, nnx.Param)
-                            cur_gstate = galore_st if galore_idx is None else optimizer.opt_state[galore_idx]
-                            new_gstate = update_galore_projectors(cur_gstate, accum_grads, params, r=galore_r)
-                            optimizer.opt_state = set_galore_state(optimizer.opt_state, galore_idx, new_gstate)
-                            galore_st = new_gstate
 
                         def value_fn(model, loss_fn, batch):
                             if cfg.jit_loss_fn:
@@ -374,6 +392,7 @@ class Trainer:
                         grad_norm = optax.global_norm(accum_grads)
                         accum_grads = None
                         global_step += 1
+                        pbar.update(1)
                         avg_micro_loss = float(accum_loss) / cfg.gradient_accumulation_steps
                         log_loss += avg_micro_loss
                         accum_loss = 0.0
@@ -387,7 +406,7 @@ class Trainer:
                             metrics = {
                                 "step": global_step,
                                 "loss": avg_loss,
-                                "learning_rate": schedule(global_step).item(),
+                                "learning_rate": float(schedule(global_step)),
                                 "epoch": epoch,
                                 "grad_norm": grad_norm.item(),
                                 "steps_per_sec": cfg.logging_steps / elapsed,
@@ -911,7 +930,7 @@ class Trainer:
 #         if total_steps <= 0:
 #             if self._num_examples is None:
 #                 raise ValueError("max_steps must be set when using a streaming dataset")
-#             per_device_batch = cfg.per_device_batch_size
+#             per_device_batch = cfg.batch_size
 #             steps_per_epoch = self._num_examples // (per_device_batch * cfg.gradient_accumulation_steps)
 #             total_steps = steps_per_epoch * cfg.num_epochs
 
