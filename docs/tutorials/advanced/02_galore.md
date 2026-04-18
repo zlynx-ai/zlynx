@@ -111,7 +111,7 @@ trconfig = TrainerConfig(
     lr_scheduler="warmup_cosine_decay",
     warmup_steps=100,
     num_epochs=3,
-    per_device_batch_size=32,
+    batch_size=32,
     optimizer_kwargs={
         "galore_r": 128,
         "galore_update_proj_gap": 200,

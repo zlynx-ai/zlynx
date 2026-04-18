@@ -84,8 +84,8 @@ from zlynx.trainer import TrainerConfig
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `per_device_batch_size` | `int` | `1` | Batch size per device. |
-| `gradient_accumulation_steps` | `int` | `1` | Number of micro-batches per optimization step. Effective batch = `per_device_batch_size × gradient_accumulation_steps`. |
+| `batch_size` | `int` | `1` | Batch size per device. |
+| `gradient_accumulation_steps` | `int` | `1` | Number of micro-batches per optimization step. Effective batch = `batch_size × gradient_accumulation_steps`. |
 
 ### Dataset
 
@@ -150,7 +150,7 @@ from zlynx.trainer import TrainerConfig
 | `eval_max_steps` | `int` | `-1` | Max eval steps. `-1` = full eval dataset. Must be `> 0` for streaming eval. |
 | `eval_steps` | `int \| None` | `None` | Evaluate every N steps (when `eval_strategy="steps"`). |
 | `eval_epochs` | `int \| None` | `None` | Evaluate every N epochs (when `eval_strategy="epochs"`). |
-| `eval_per_device_batch_size` | `int \| None` | `None` | Eval batch size. `None` = use `per_device_batch_size`. |
+| `eval_batch_size` | `int \| None` | `None` | Eval batch size. `None` = use `batch_size`. |
 
 ### Precision
 

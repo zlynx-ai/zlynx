@@ -41,7 +41,7 @@ The default `"auto"` strategy makes a smart choice:
 ```python
 config = TrainerConfig(
     sharding="auto",
-    per_device_batch_size=64,
+    batch_size=64,
     ...
 )
 ```
@@ -57,7 +57,7 @@ Replicates the full model on every device. Each device processes a different sli
 ```python
 config = TrainerConfig(
     sharding="ddp",
-    per_device_batch_size=64,   # batch per device
+    batch_size=64,   # batch per device
     ...
 )
 ```
@@ -73,7 +73,7 @@ Shards model parameters across devices. Each device holds only a fraction of the
 ```python
 config = TrainerConfig(
     sharding="fsdp",
-    per_device_batch_size=64,
+    batch_size=64,
     ...
 )
 ```
@@ -164,7 +164,7 @@ from zlynx.trainer import Trainer, TrainerConfig
 print(f"Training on {len(jax.devices())} {jax.default_backend().upper()} devices")
 
 config = TrainerConfig(
-    per_device_batch_size=128,
+    batch_size=128,
     learning_rate=1e-3,
     num_epochs=5,
     sharding="auto",                 # auto-selects DDP or FSDP

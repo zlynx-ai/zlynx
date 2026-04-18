@@ -1,6 +1,6 @@
 [project]
 name = "zlynx"
-version = "0.1.9"
+version = "0.1.10"
 description = "Zlynx is a lightweight, highly-customizable deep learning library built on top of JAX and Flax NNX"
 readme = "README.md"
 requires-python = ">=3.12"

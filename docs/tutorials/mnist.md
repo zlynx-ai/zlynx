@@ -191,7 +191,7 @@ JAX requires explicit PRNG keys for reproducibility. We split a key and pass one
 
 ```python
 config = TrainerConfig(
-    per_device_batch_size=64,
+    batch_size=64,
     learning_rate=1e-3,
     num_epochs=3,
     logging_steps=100,
@@ -208,7 +208,7 @@ config = TrainerConfig(
 
 | Option                        | Default      | Description                                                        |
 | ----------------------------- | ------------ | ------------------------------------------------------------------ |
-| `per_device_batch_size`       | `1`          | Samples per device per training step                               |
+| `batch_size`       | `1`          | Samples per device per training step                               |
 | `gradient_accumulation_steps` | `1`          | Micro-batches per optimizer update                                 |
 | `optimizer`                   | `"adamw"`    | Any Optax optimizer name or callable                               |
 | `learning_rate`               | `5e-5`       | Peak learning rate                                                 |
@@ -396,7 +396,7 @@ def loss_fn(model, batch):
 
 # ── Config ───────────────────────────────────────────────────
 config = TrainerConfig(
-    per_device_batch_size=64, learning_rate=1e-3, num_epochs=3,
+    batch_size=64, learning_rate=1e-3, num_epochs=3,
     logging_steps=100, save_steps=500, save_total_limit=2,
     output_dir="./output", sharding=False,
     processing_train_dataset_fn=preprocess, seed=42,
@@ -436,7 +436,7 @@ model.save("./my_mnist_model")
 Now that you've trained your first model with Zlynx, try these:
 
 - **Bigger architectures** — add more conv blocks, batch normalization, or residual connections
-- **Hyperparameter tuning** — experiment with `learning_rate`, `per_device_batch_size`, `lr_scheduler`, `warmup_steps`
+- **Hyperparameter tuning** — experiment with `learning_rate`, `batch_size`, `lr_scheduler`, `warmup_steps`
 - **Multi-device training** — set `sharding="auto"` (or `"ddp"` / `"fsdp"`) to distribute across GPUs or TPUs
 - **PEFT fine-tuning** — apply LoRA, DoRA, VeRA, and more with `apply_peft()` from `zlynx.modules.peft`
 - **GaLore optimizer** — use `optimizer="galore_adamw"` to reduce optimizer memory via gradient low-rank projection

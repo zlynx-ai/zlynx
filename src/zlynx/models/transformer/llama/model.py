@@ -4,7 +4,7 @@ import jax.numpy as jnp
 from flax import nnx
 
 from zlynx.modules import MLP, Attention, RMSNorm, RotaryEmbedding
-from zlynx.models.base import Z
+from zlynx.core.base import Z
 
 from .config import LlamaConfig
 from ...utils import get_dtype, get_act_fn
@@ -158,7 +158,7 @@ class LlamaLanguageModel(LanguageModel, Z):
         labels: jax.Array | None = None,
         past_key_values: list | None = None,
     ):
-        from zlynx.models.outputs import CausalLMOutput
+        from zlynx.core.outputs import CausalLMOutput
         import optax
 
         hidden_states, present_key_values = self.model(

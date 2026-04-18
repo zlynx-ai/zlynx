@@ -141,7 +141,7 @@ from zlynx.trainer import TrainerConfig
 
 config = TrainerConfig(
     # Batch
-    per_device_batch_size=64,
+    batch_size=64,
     gradient_accumulation_steps=1,
 
     # Optimizer
@@ -201,7 +201,7 @@ Simulate larger batch sizes on limited hardware:
 
 ```python
 config = TrainerConfig(
-    per_device_batch_size=16,            # micro-batch
+    batch_size=16,            # micro-batch
     gradient_accumulation_steps=4,       # effective batch = 16 × 4 = 64
 )
 ```
@@ -273,7 +273,7 @@ trainer = Trainer(
     model=model,
     loss_fn=lambda model, batch: ...,       # (model, batch) → scalar
     train_dataset=data,                     # list, HF dataset, or string
-    config=TrainerConfig(per_device_batch_size=32, num_epochs=5),
+    config=TrainerConfig(batch_size=32, num_epochs=5),
 )
 trainer.train()
 ```

@@ -102,7 +102,7 @@ class LanguageModel:
         num_layers = cfg.num_hidden_layers
         kv_head = cfg.kv_head if cfg.kv_head else cfg.attention_head
         head_dim = cfg.head_dim
-        from ..utils import get_dtype
+        from ...utils import get_dtype
         cache_dtype = get_dtype(cfg.dtype) if cfg.dtype else jnp.bfloat16
 
         cache_index = jnp.int32(0)
