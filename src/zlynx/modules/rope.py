@@ -10,6 +10,55 @@ from flax import nnx
 from dataclasses import dataclass
 
 
+def compute_rope(positions: jax.Array, head_dim: int, base_frequency: float) -> tuple[jax.Array, jax.Array]:
+    """Compute RoPE cos/sin from absolute positions.
+
+    Args:
+        positions: (B, S) integer position indices
+        head_dim: dimension of each attention head
+        base_frequency: RoPE base frequency (e.g. 10_000 for local, 1_000_000 for global)
+
+    Returns:
+        cos, sin: each of shape (B, S, head_dim)
+    """
+    inv_freq = 1.0 / (base_frequency ** (jnp.arange(0, head_dim, 2, dtype=jnp.float32) / head_dim))
+    freqs = positions[..., None].astype(jnp.float32) * inv_freq[None, None, :]  # (B, S, head_dim//2)
+    emb = jnp.concatenate([freqs, freqs], axis=-1)  # (B, S, head_dim)
+    return jnp.cos(emb), jnp.sin(emb)
+
+
+def apply_partial_rope(
+    query: jax.Array,
+    key: jax.Array,
+    cos: jax.Array,
+    sin: jax.Array,
+    proportion: float = 1.0,
+) -> tuple[jax.Array, jax.Array]:
+    """Apply RoPE to only the first `proportion` of head dimensions.
+
+    Args:
+        query, key: (..., head_dim)
+        cos, sin: (..., head_dim) — full head_dim freqs
+        proportion: fraction of head_dim to rotate (e.g. 0.25 for global attn)
+
+    Returns:
+        rotated query, key
+    """
+    if proportion >= 1.0:
+        return apply_rope(query, key, cos, sin)
+
+    head_dim = query.shape[-1]
+    rope_dim = int(head_dim * proportion)
+
+    q_rope, q_pass = query[..., :rope_dim], query[..., rope_dim:]
+    k_rope, k_pass = key[..., :rope_dim], key[..., rope_dim:]
+
+    cos_r, sin_r = cos[..., :rope_dim], sin[..., :rope_dim]
+    q_rope, k_rope = apply_rope(q_rope, k_rope, cos_r, sin_r)
+
+    return jnp.concatenate([q_rope, q_pass], axis=-1), jnp.concatenate([k_rope, k_pass], axis=-1)
+
+
 def rotate_half(x: jax.Array):
     x1 = x[..., : x.shape[-1] // 2]
     x2 = x[..., x.shape[-1] // 2 :]
