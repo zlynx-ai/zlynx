@@ -131,12 +131,13 @@ class Llama(nnx.Module):
         return self.layernorm(hidden_states), present_key_values
 
 
-class LlamaLanguageModel(LanguageModel, Z):
+class LlamaLanguageModel(LanguageModel):
     def __init__(
         self, config: LlamaConfig, key: jax.typing.ArrayLike = jax.random.key(42)
     ):
         nnx.Module.__init__(self)
         LanguageModel.__init__(self, config=config)
+        
         model_key, lm_head_key = jax.random.split(key, 2)
         self.model = Llama(config=config, key=model_key)
         self.lm_head = nnx.Linear(

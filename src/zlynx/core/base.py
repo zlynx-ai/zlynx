@@ -5,7 +5,6 @@ from pathlib import Path
 from orbax import checkpoint as ocp
 from typing import Literal, List, Dict, Tuple, Set, Optional, Any
 from dataclasses import field
-import os
 import json
 import jax, jax.numpy as jnp
 import logging
@@ -14,7 +13,18 @@ import tempfile
 from datetime import datetime
 
 from ..utils import get_dtype
-from .ckpt import _load_safetensors, _save_safetensors
+from .ckpt import _load_safetensors, _save_safetensors, _save_ckpt, _load_ckpt
+
+
+def _normalize_dtypes_in_config_dict(config_dict: dict) -> dict:
+    """Convert `dtype` / `param_dtype` from dtype objects to str names for JSON serialization."""
+    for key in ("dtype", "param_dtype"):
+        if key in config_dict and config_dict[key] is not None and not isinstance(config_dict[key], str):
+            try:
+                config_dict[key] = jnp.dtype(config_dict[key]).name
+            except Exception:
+                pass
+    return config_dict
 
 
 class Z(nnx.Module):
@@ -39,7 +49,7 @@ class Z(nnx.Module):
     model.save("./my_model")
 
     # Load
-    model, _ = MyModel.load("./my_model")
+    model = MyModel.load("./my_model")
     ```
 
     ## Methods
@@ -67,11 +77,16 @@ class Z(nnx.Module):
 
     # return config
     @classmethod
-    def load_config(cls, path: str | Path, asdict: bool = False, config_map: Optional[Dict] = None) -> Any:
+    def load_config(
+        cls, path: str | Path, 
+        asdict: bool = False, 
+        config_map: Optional[Dict] = None
+    ) -> Any:
+        
         path = Path(path).resolve()
 
-        assert (path / "config.json").exists(), \
-            f"model config not found in dir {path}"
+        if not (path / "config.json").exists(): 
+            return None
 
         with open(path / "config.json", "r") as config_file:
             config_dict: dict = json.load(config_file)
@@ -97,9 +112,9 @@ class Z(nnx.Module):
 
         # still None return as C base config
         if config_class is None:
-            from .config.config import C
-            config_class = type('Config', (C,), {
-                '__annotations__': {**C.__annotations__, **{k: type(v) for k, v in config_dict.items()}},
+            from ..core.config import Config
+            config_class = type('Config', (Config,), {
+                '__annotations__': {**Config.__annotations__, **{k: type(v) for k, v in config_dict.items()}},
                 **{k: v if not isinstance(v, (List, Dict, Tuple, Set)) else field(default_factory=lambda v=v: v) for k, v in config_dict.items()}
             })
             config_class = struct.dataclass(config_class)
@@ -111,13 +126,12 @@ class Z(nnx.Module):
         cls, path: str | Path, 
         *args,
         dtype: str | None=None, 
-        config=None, 
         config_map: Optional[Dict]=None,
         module_map: Optional[Dict]=None,
         sharding: int | str | None=None,
-        format: Literal["orbax", "safetensors"]="orbax",
+        fmt: Literal["orbax", "safetensors", "npz", "msgpack"]="orbax",
         **kwargs
-    ) -> Tuple["Z", Optional[Any]]:
+    ) -> "Z":
         
         """
         Load a model from a checkpoint.
@@ -171,28 +185,20 @@ class Z(nnx.Module):
 
         path = Path(path).resolve()
 
-        if config is None:
-            try:
-                config = cls.load_config(path, config_map=config_map)
-            except Exception as e:
-                print(f"warning: {e}")
+        config = cls.load_config(path, config_map=config_map)
 
         if cls is Z:
-            from .. import models
-
+            
             arch_name = None
             if config is not None:
-                arch_name = getattr(config, "architecture", None) \
-                    or getattr(config, "architectures", None) \
-                    or getattr(config, "arch", None)
-
-            if isinstance(arch_name, List):
-                raise ValueError("Not support loading this model from Z class.")
+                arch_name = getattr(config, "arch", None)
                 
             if arch_name is None:
                 raise ValueError("Could not determine model architecture.")
             
+            from .. import models
             arch = getattr(models, arch_name, None)
+
         else:
             # allow config = None
             arch = cls
@@ -201,6 +207,7 @@ class Z(nnx.Module):
 
         if config is None:
             model = nnx.eval_shape(lambda: arch(*args, **kwargs))
+            
         else:
             model = nnx.eval_shape(lambda: arch(config=config, *args, **kwargs))
         
@@ -234,13 +241,7 @@ class Z(nnx.Module):
 
             state = jax.tree.map(wrap_with_sharding, state)
 
-        if format == "safetensors":
-            state = _load_safetensors(state, path, module_map)
-
-        if format == "orbax":
-            ckpter = ocp.StandardCheckpointer()
-            state = ckpter.restore(path, state)
-            ckpter.wait_until_finished()
+        state = _load_ckpt(state, path, fmt=fmt, module_map=module_map)
 
         if dtype is not None:
             target_dtype = get_dtype(dtype) if isinstance(dtype, str) else dtype
@@ -255,13 +256,12 @@ class Z(nnx.Module):
         return model
     
     def save(
-        self, path: str | Path, *, 
-        format: Literal["orbax", "safetensors"] = "orbax", 
-        max_shard_size_gb: float=3.0
+        self, path: str | Path, *,
+        fmt: Literal["orbax", "safetensors", "npz", "msgpack"] = "orbax",
+        max_shard_size_gb: float = 3.0,
     ) -> None:
         if isinstance(path, str):
             path = Path(path)
-
         if not path.is_absolute():
             path = path.resolve()
 
@@ -269,41 +269,26 @@ class Z(nnx.Module):
             tmp_path = Path(tmp_dir)
 
             try:
-                
                 config = getattr(self, "config", self.kwargs.get("config", None) if hasattr(self, "kwargs") else None)
 
-                if tmp_path.exists():
-                    shutil.rmtree(tmp_path)
-                
-                if format == "orbax":
-                    state = nnx.state(self)
-                    checkpointer = ocp.StandardCheckpointer()
-                    checkpointer.save(tmp_path, state)
-                    checkpointer.wait_until_finished()
-                
-                if format == "safetensors":
-                    _save_safetensors(self, tmp_path, max_shard_size_gb=max_shard_size_gb)
+                _save_ckpt(self, tmp_path, fmt=fmt, max_shard_size_gb=max_shard_size_gb)
 
                 if config is not None:
                     with open(tmp_path / "config.json", "w") as config_file:
-                        json.dump(serialization.to_state_dict(config), config_file, indent=2)
+                        json.dump(_normalize_dtypes_in_config_dict(serialization.to_state_dict(config)), config_file, indent=2)
 
                 if jax.process_index() == 0:
-                    if path.exists():
-                        shutil.rmtree(path)
-
-                    tmp_path.rename(path)
-
+                    shutil.copytree(tmp_path, path, dirs_exist_ok=True)
                     logging.info(f"Save model path {path}.")
 
             except Exception as e:
                 logging.error(e)
 
     def push_hf(
-        self, repo_id: str, 
+        self, repo_id: str,
         private: bool = False,
         *,
-        format: Literal["orbax", "safetensors"]="safetensors", 
+        fmt: Literal["orbax", "safetensors", "npz", "msgpack"]="safetensors",
         max_shard_size_gb: float = 3.0,
         **kwargs
     ):
@@ -312,7 +297,7 @@ class Z(nnx.Module):
         repo_type = "model"
 
         repo = create_repo(
-            repo_id=repo_id, 
+            repo_id=repo_id,
             private=private,
             repo_type=repo_type,
             **kwargs
@@ -324,24 +309,13 @@ class Z(nnx.Module):
             tmp_path = Path(tmp_dir)
 
             try:
-                
                 config = getattr(self, "config", self.kwargs.get("config", None) if hasattr(self, "kwargs") else None)
 
-                if tmp_path.exists():
-                    shutil.rmtree(tmp_path)
-                
-                if format in ["orbax", "all"]:
-                    state = nnx.state(self)
-                    checkpointer = ocp.StandardCheckpointer()
-                    checkpointer.save(tmp_path, state)
-                    checkpointer.wait_until_finished()
-                
-                if format in ["safetensors", "all"]:
-                    _save_safetensors(self, tmp_path, max_shard_size_gb=max_shard_size_gb)
+                _save_ckpt(self, tmp_path, fmt=fmt, max_shard_size_gb=max_shard_size_gb)
 
                 if config is not None:
                     with open(tmp_path / "config.json", "w") as config_file:
-                        json.dump(serialization.to_state_dict(config), config_file, indent=2)
+                        json.dump(_normalize_dtypes_in_config_dict(serialization.to_state_dict(config)), config_file, indent=2)
 
                 if jax.process_index() == 0:
                     upload_folder(
@@ -357,10 +331,12 @@ class Z(nnx.Module):
                 logging.error(e)
 
     def push_kaggle(
-        self, repo_id: str, 
-        variation: str="default", *, 
-        format: Literal["orbax", "safetensors"]="safetensors", 
-        max_shard_size_gb: float=3.0, **kwargs
+        self, repo_id: str,
+        variation: str="default",
+        *,
+        fmt: Literal["orbax", "safetensors", "npz", "msgpack"]="safetensors",
+        max_shard_size_gb: float=3.0,
+        **kwargs
     ) -> None:
         """
         ### login kaggle:
@@ -377,24 +353,13 @@ class Z(nnx.Module):
             tmp_path = Path(tmp_dir)
 
             try:
-                
                 config = getattr(self, "config", self.kwargs.get("config", None) if hasattr(self, "kwargs") else None)
 
-                if tmp_path.exists():
-                    shutil.rmtree(tmp_path)
-                
-                if format in ["orbax", "all"]:
-                    state = nnx.state(self)
-                    checkpointer = ocp.StandardCheckpointer()
-                    checkpointer.save(tmp_path, state)
-                    checkpointer.wait_until_finished()
-                
-                if format in ["safetensors", "all"]:
-                    _save_safetensors(self, tmp_path, max_shard_size_gb=max_shard_size_gb)
+                _save_ckpt(self, tmp_path, fmt=fmt, max_shard_size_gb=max_shard_size_gb)
 
                 if config is not None:
                     with open(tmp_path / "config.json", "w") as config_file:
-                        json.dump(serialization.to_state_dict(config), config_file, indent=2)
+                        json.dump(_normalize_dtypes_in_config_dict(serialization.to_state_dict(config)), config_file, indent=2)
 
                 if jax.process_index() == 0:
                     kagglehub.model_upload(
@@ -411,67 +376,77 @@ class Z(nnx.Module):
 
     @classmethod
     def load_hf(
-        cls, repo_id: str, 
-        *,
-        dtype: Optional[str]=None, 
-        config: Optional[Any]=None, 
-        config_map: Optional[Dict]=None,
-        module_map: Optional[Dict]=None,
-        sharding: Literal["ddp", "fsdp"]=None,
-        format: Literal["orbax", "safetensors"]="safetensors",
-        hf_kwargs: Optional[Dict]=None,
-        **model_kwargs
-    ) -> Tuple["Z", Optional[Any]]:
-        
-        from huggingface_hub import snapshot_download
-
-        local_dir = snapshot_download(
-            repo_id=repo_id, repo_type="model", 
-            **(hf_kwargs if hf_kwargs is not None else {})
-        )
-        path = Path(local_dir).resolve()
-
-        model = cls.load(
-            path, dtype=dtype, 
-            config=config, 
-            sharding=sharding, 
-            format=format, 
-            config_map=config_map,
-            module_map=module_map,
-            **model_kwargs
-        )
-        return model
-    
-
-    @classmethod
-    def load_kaggle(
-        cls, repo_id: str, 
-        variation: str="default",
-        *,
-        dtype: Optional[str]=None, 
-        config: Optional[Any]=None, 
+        cls, repo_id: str,
+        *args,
+        dtype: Optional[str]=None,
         config_map: Optional[Dict]=None,
         module_map: Optional[Dict]=None,
         sharding: Optional[Literal["ddp", "fsdp"]]=None,
-        format: Literal["orbax", "safetensors"]="safetensors",
-        kaggle_kwargs: Optional[Dict]=None,
-        **model_kwargs
-    ) -> Tuple["Z", Optional[Any]]:
-        import kagglehub
+        fmt: Literal["orbax", "safetensors", "npz", "msgpack"]="safetensors",
+        **kwargs
+    ) -> "Z":
 
-        local_dir = kagglehub.model_download(
-            f"{repo_id}/flax/{variation}", 
-            **(kaggle_kwargs if kaggle_kwargs is not None else {})
+        from huggingface_hub import snapshot_download
+
+        snapshot_keys = {
+            "revision", "cache_dir", "local_dir", "library_name", "library_version",
+            "user_agent", "etag_timeout", "force_download", "token", "local_files_only",
+            "allow_patterns", "ignore_patterns", "max_workers", "tqdm_class", "headers",
+            "endpoint", "dry_run",
+        }
+        snapshot_kwargs = {k: kwargs.pop(k) for k in list(kwargs) if k in snapshot_keys}
+
+        local_dir = snapshot_download(
+            repo_id=repo_id, repo_type="model",
+            **snapshot_kwargs
         )
         path = Path(local_dir).resolve()
 
-        model = cls.load(
-            path, dtype=dtype, 
-            config=config, 
-            sharding=sharding, 
-            format=format, 
+        return cls.load(
+            path, *args,
+            dtype=dtype,
+            sharding=sharding,
+            fmt=fmt,
             config_map=config_map,
             module_map=module_map,
-            **model_kwargs
+            **kwargs
         )
-        return model
+
+
+    @classmethod
+    def load_kaggle(
+        cls, repo_id: str,
+        variation: str="default",
+        *args,
+        dtype: Optional[str]=None,
+        config_map: Optional[Dict]=None,
+        module_map: Optional[Dict]=None,
+        sharding: Optional[Literal["ddp", "fsdp"]]=None,
+        fmt: Literal["orbax", "safetensors", "npz", "msgpack"]="safetensors",
+        **kwargs
+    ) -> "Z":
+        import kagglehub
+
+        download_keys = {"path", "force_download", "output_dir"}
+        download_kwargs = {k: kwargs.pop(k) for k in list(kwargs) if k in download_keys}
+
+        local_dir = kagglehub.model_download(
+            f"{repo_id}/flax/{variation}",
+            **download_kwargs
+        )
+        path = Path(local_dir).resolve()
+
+        return cls.load(
+            path, *args,
+            dtype=dtype,
+            sharding=sharding,
+            fmt=fmt,
+            config_map=config_map,
+            module_map=module_map,
+            **kwargs
+        )
+    
+
+class PretrainedModel(Z):
+    def __init__(self):
+        super().__init__()
