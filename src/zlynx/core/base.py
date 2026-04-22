@@ -5,14 +5,17 @@ from pathlib import Path
 from orbax import checkpoint as ocp
 from typing import Literal, List, Dict, Tuple, Set, Optional, Any
 from dataclasses import field
+from importlib import import_module
+from importlib.metadata import PackageNotFoundError, version as installed_version
 import json
 import jax, jax.numpy as jnp
 import logging
 import shutil
 import tempfile
+import os
+import re
 from datetime import datetime
 
-from ..utils import get_dtype
 from .ckpt import _load_safetensors, _save_safetensors, _save_ckpt, _load_ckpt
 
 
@@ -25,6 +28,73 @@ def _normalize_dtypes_in_config_dict(config_dict: dict) -> dict:
             except Exception:
                 pass
     return config_dict
+
+
+def _version_key(version: str) -> tuple[tuple[int, Any], ...]:
+    return tuple(
+        (0, int(token)) if token.isdigit() else (1, token.lower())
+        for token in re.findall(r"\d+|[A-Za-z]+", version)
+    )
+
+
+def _require_optional_dependency(
+    module_name: str,
+    package_name: str,
+    min_version: str,
+):
+    try:
+        current_version = installed_version(package_name)
+    except PackageNotFoundError as e:
+        raise ImportError(
+            f"`{package_name}` is required for this operation. "
+            f"Install it with `pip install -U {package_name}`."
+        ) from e
+
+    if _version_key(current_version) < _version_key(min_version):
+        raise ImportError(
+            f"`{package_name}` {current_version} is too old for this operation. "
+            f"Please update it with `pip install -U {package_name}`."
+        )
+
+    try:
+        return import_module(module_name)
+    except Exception as e:
+        raise ImportError(
+            f"Failed to import `{package_name}` {current_version}. "
+            f"Try updating it with `pip install -U {package_name}`."
+        ) from e
+
+
+def _bundle_directory(src_dir: Path, archive_name: str, archive_format: str) -> Path:
+    with tempfile.TemporaryDirectory(dir=src_dir.parent, prefix="zlynx_bundle_") as bundle_dir:
+        archive_base = Path(bundle_dir) / archive_name
+        archive_path = Path(
+            shutil.make_archive(
+                str(archive_base),
+                archive_format,
+                root_dir=src_dir,
+            )
+        )
+        upload_dir = src_dir / "_upload_bundle"
+        upload_dir.mkdir(exist_ok=True)
+        final_archive_path = upload_dir / archive_path.name
+        shutil.move(str(archive_path), str(final_archive_path))
+        return final_archive_path
+
+
+def _maybe_unpack_single_archive(path: Path) -> Path:
+    archive_files = [
+        p for p in path.iterdir()
+        if p.is_file() and (p.suffix == ".zip" or "".join(p.suffixes[-2:]) == ".tar.gz")
+    ]
+    if len(archive_files) != 1:
+        return path
+
+    archive_path = archive_files[0]
+    extract_dir = path / "_extracted"
+    extract_dir.mkdir(exist_ok=True)
+    shutil.unpack_archive(str(archive_path), str(extract_dir))
+    return extract_dir
 
 
 class Z(nnx.Module):
@@ -101,10 +171,10 @@ class Z(nnx.Module):
         config_class_name = config_dict.get("conf", None) 
         
         if config_class_name is not None:
-            from .. import models
+            from .. import model
 
             # try in-lib model config
-            config_class = getattr(models, config_class_name, None)
+            config_class = getattr(model, config_class_name, None)
             
             # try user defined
             if config_class is None:
@@ -196,8 +266,8 @@ class Z(nnx.Module):
             if arch_name is None:
                 raise ValueError("Could not determine model architecture.")
             
-            from .. import models
-            arch = getattr(models, arch_name, None)
+            from .. import model
+            arch = getattr(model, arch_name, None)
 
         else:
             # allow config = None
@@ -244,7 +314,7 @@ class Z(nnx.Module):
         state = _load_ckpt(state, path, fmt=fmt, module_map=module_map)
 
         if dtype is not None:
-            target_dtype = get_dtype(dtype) if isinstance(dtype, str) else dtype
+            target_dtype = dtype
             def _cast(x):
                 if hasattr(x, "dtype") and x.dtype != target_dtype and jnp.issubdtype(x.dtype, jnp.floating):
                     return x.astype(target_dtype)
@@ -290,17 +360,42 @@ class Z(nnx.Module):
         *,
         fmt: Literal["orbax", "safetensors", "npz", "msgpack"]="safetensors",
         max_shard_size_gb: float = 3.0,
+        exist_ok: bool = True,
         **kwargs
     ):
-        from huggingface_hub import create_repo, upload_folder
+        huggingface_hub = _require_optional_dependency(
+            "huggingface_hub",
+            "huggingface-hub",
+            "1.6.0",
+        )
+        create_repo = huggingface_hub.create_repo
+        upload_folder = huggingface_hub.upload_folder
 
         repo_type = "model"
+
+        create_repo_keys = {
+            "token", "visibility", "resource_group_id", "space_sdk",
+            "space_hardware", "space_storage", "space_sleep_time",
+            "space_secrets", "space_variables", "space_volumes",
+        }
+        upload_folder_keys = {
+            "path_in_repo", "commit_message", "commit_description", "token",
+            "revision", "create_pr", "parent_commit", "allow_patterns",
+            "ignore_patterns", "delete_patterns", "run_as_future",
+        }
+
+        create_repo_kwargs = {k: kwargs.pop(k) for k in list(kwargs) if k in create_repo_keys}
+        upload_folder_kwargs = {k: kwargs.pop(k) for k in list(kwargs) if k in upload_folder_keys}
+        if kwargs:
+            unknown = ", ".join(sorted(kwargs))
+            raise TypeError(f"Unexpected keyword argument(s) for push_hf: {unknown}")
 
         repo = create_repo(
             repo_id=repo_id,
             private=private,
             repo_type=repo_type,
-            **kwargs
+            exist_ok=exist_ok,
+            **create_repo_kwargs,
         )
         repo_id = repo.repo_id
 
@@ -318,14 +413,15 @@ class Z(nnx.Module):
                         json.dump(_normalize_dtypes_in_config_dict(serialization.to_state_dict(config)), config_file, indent=2)
 
                 if jax.process_index() == 0:
-                    upload_folder(
+                    commit_info = upload_folder(
                         folder_path=tmp_path,
                         repo_id=repo_id,
                         repo_type=repo_type,
-                        **kwargs
+                        **upload_folder_kwargs,
                     )
 
                     logging.info(f"Pushed model to HuggingFace https://huggingface.co/{repo_id}")
+                    return commit_info
 
             except Exception as e:
                 logging.error(e)
@@ -336,6 +432,8 @@ class Z(nnx.Module):
         *,
         fmt: Literal["orbax", "safetensors", "npz", "msgpack"]="safetensors",
         max_shard_size_gb: float=3.0,
+        bundle: bool = False,
+        archive_format: Literal["zip", "gztar"] = "gztar",
         **kwargs
     ) -> None:
         """
@@ -345,7 +443,11 @@ class Z(nnx.Module):
         kagglehub.login()
         ```
         """
-        import kagglehub
+        kagglehub = _require_optional_dependency(
+            "kagglehub",
+            "kagglehub",
+            "1.0.0",
+        )
 
         date = datetime.now().strftime("%Y-%m-%d")
 
@@ -362,9 +464,14 @@ class Z(nnx.Module):
                         json.dump(_normalize_dtypes_in_config_dict(serialization.to_state_dict(config)), config_file, indent=2)
 
                 if jax.process_index() == 0:
+                    local_model_dir = tmp_path
+                    if bundle:
+                        archive_name = variation.replace("/", "_") or "model"
+                        archive_path = _bundle_directory(tmp_path, archive_name, archive_format)
+                        local_model_dir = archive_path.parent
                     kagglehub.model_upload(
                         handle = f"{repo_id}/flax/{variation}",
-                        local_model_dir = str(tmp_path),
+                        local_model_dir = str(local_model_dir),
                         version_notes = f'Update {date}',
                         **kwargs
                     )
@@ -385,8 +492,12 @@ class Z(nnx.Module):
         fmt: Literal["orbax", "safetensors", "npz", "msgpack"]="safetensors",
         **kwargs
     ) -> "Z":
-
-        from huggingface_hub import snapshot_download
+        huggingface_hub = _require_optional_dependency(
+            "huggingface_hub",
+            "huggingface-hub",
+            "1.6.0",
+        )
+        snapshot_download = huggingface_hub.snapshot_download
 
         snapshot_keys = {
             "revision", "cache_dir", "local_dir", "library_name", "library_version",
@@ -425,7 +536,11 @@ class Z(nnx.Module):
         fmt: Literal["orbax", "safetensors", "npz", "msgpack"]="safetensors",
         **kwargs
     ) -> "Z":
-        import kagglehub
+        kagglehub = _require_optional_dependency(
+            "kagglehub",
+            "kagglehub",
+            "1.0.0",
+        )
 
         download_keys = {"path", "force_download", "output_dir"}
         download_kwargs = {k: kwargs.pop(k) for k in list(kwargs) if k in download_keys}
@@ -434,7 +549,7 @@ class Z(nnx.Module):
             f"{repo_id}/flax/{variation}",
             **download_kwargs
         )
-        path = Path(local_dir).resolve()
+        path = _maybe_unpack_single_archive(Path(local_dir).resolve())
 
         return cls.load(
             path, *args,

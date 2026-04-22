@@ -401,13 +401,18 @@ class Trainer:
                         if global_step % cfg.logging_steps == 0:
                             elapsed = time.time() - t_start
                             avg_loss = log_loss / cfg.logging_steps
+                            epoch_progress = (
+                                (global_step / total_steps) * cfg.num_epochs
+                                if total_steps > 0
+                                else float(epoch)
+                            )
 
                             # base metrics + anything from loss_fn's dict return
                             metrics = {
                                 "step": global_step,
                                 "loss": avg_loss,
                                 "learning_rate": float(schedule(global_step)),
-                                "epoch": epoch,
+                                "epoch": round(epoch_progress, 4),
                                 "grad_norm": grad_norm.item(),
                                 "steps_per_sec": cfg.logging_steps / elapsed,
                             }

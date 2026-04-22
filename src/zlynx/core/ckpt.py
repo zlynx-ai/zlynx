@@ -1,6 +1,6 @@
 from flax import nnx
 from typing import Optional, Dict, Literal
-import os, json, logging, jax, jax.numpy as jnp
+import os, json, logging, shutil, jax, jax.numpy as jnp
 from safetensors.flax import save_file, load_file
 from pathlib import Path
 
@@ -123,10 +123,24 @@ def _save_safetensors(model: nnx.Module, path: str | Path, max_shard_size_gb: fl
 
 def _save_orbax(model: nnx.Module, path: str | Path) -> None:
     from orbax import checkpoint as ocp
+    path = Path(path)
+    os.makedirs(path, exist_ok=True)
     state = nnx.state(model)
     ckpter = ocp.StandardCheckpointer()
-    ckpter.save(Path(path), state)
+    staging_path = path / "_orbax_checkpoint"
+    if staging_path.exists():
+        shutil.rmtree(staging_path)
+    ckpter.save(staging_path, state)
     ckpter.wait_until_finished()
+    for child in staging_path.iterdir():
+        dest = path / child.name
+        if dest.exists():
+            if dest.is_dir():
+                shutil.rmtree(dest)
+            else:
+                dest.unlink()
+        shutil.move(str(child), str(dest))
+    staging_path.rmdir()
 
 
 def _save_npz(model: nnx.Module, path: str | Path) -> None:
@@ -140,7 +154,7 @@ def _save_npz(model: nnx.Module, path: str | Path) -> None:
 def _save_msgpack(model: nnx.Module, path: str | Path) -> None:
     from flax import serialization
     os.makedirs(path, exist_ok=True)
-    state_dict = serialization.to_state_dict(nnx.state(model))
+    state_dict = nnx.to_pure_dict(nnx.state(model))
     with open(os.path.join(path, "model.msgpack"), "wb") as f:
         f.write(serialization.msgpack_serialize(state_dict))
 

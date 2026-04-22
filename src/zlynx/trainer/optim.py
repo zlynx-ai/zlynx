@@ -4,9 +4,25 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import inspect
-from sklearn.utils.extmath import randomized_svd
 
 from .trainer import TrainerConfig
+
+
+_randomized_svd = None
+
+
+def _require_randomized_svd():
+    global _randomized_svd
+    if _randomized_svd is None:
+        try:
+            from sklearn.utils.extmath import randomized_svd as _imported_randomized_svd
+        except ImportError as e:
+            raise ImportError(
+                "GaLore requires scikit-learn for randomized SVD. "
+                "Install it with `pip install -U scikit-learn` to use `galore_*` optimizers."
+            ) from e
+        _randomized_svd = _imported_randomized_svd
+    return _randomized_svd
 
 
 CORE_OPTIMIZERS = {
@@ -280,6 +296,8 @@ def update_galore_projectors(galore_state, grads, params, r: int = 128):
     Returns:
         Updated GaloreState with new projectors.
     """
+    randomized_svd = _require_randomized_svd()
+
     # Flatten to raw arrays to avoid pytree structure mismatch between
     # nnx variable types (Param, OptVariable, etc.)
     grad_leaves = jax.tree_util.tree_leaves(grads)
@@ -364,6 +382,7 @@ def build_optimizer(config: "TrainerConfig", total_steps: int):
     # Wrap only the base optimizer with GaLore — before weight decay
     is_galore = isinstance(config.optimizer, str) and config.optimizer.startswith("galore_")
     if is_galore:
+        _require_randomized_svd()
         galore_kwargs = {
             k.removeprefix("galore_"): v
             for k, v in config.optimizer_kwargs.items()

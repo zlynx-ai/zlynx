@@ -8,6 +8,10 @@ license = {text = "Apache-2.0"}
 authors = [
     {name = "Shinapri"},
 ]
+maintainers = [
+    { name = "Shinapri" },
+]
+
 keywords = ["jax", "flax", "deep-learning", "machine-learning", "neural-networks"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -22,12 +26,10 @@ dependencies = [
     "datasets>=4.6.1",
     "flax>=0.12.5",
     "grain>=0.2.16",
-    "jax>=0.9.1",
-    "kagglehub>=1.0.0",
+    "jax>=0.9.2",
     "optax>=0.2.6",
     "orbax>=0.1.9",
     "safetensors>=0.7.0",
-    "huggingface-hub>=1.6.0",
 ]
 
 [project.optional-dependencies]
@@ -36,6 +38,34 @@ dev = [
     "twine>=6.0.0",
     "build>=1.2.0",
 ]
+cpu = []
+tpu = [
+    "jax[tpu]>=0.9.2",
+]
+cuda = [
+    "jax[cuda]>=0.9.2",
+]
+cuda12 = [
+    "jax[cuda12]>=0.9.2",
+]
+cuda13 = [
+    "jax[cuda13]>=0.9.2",
+]
+cuda12-local = [
+    "jax[cuda12-local]>=0.9.2",
+]
+cuda13-local = [
+    "jax[cuda13-local]>=0.9.2",
+]
+# rocm7-local = [
+#     "jax[rocm7-local]>=0.9.2; sys_platform == 'linux' and platform_machine == 'x86_64'",
+# ]
+
+[project.urls]
+Homepage = "https://github.com/zlynx-ai/zlynx"
+Repository = "https://github.com/zlynx-ai/zlynx"
+Issues = "https://github.com/zlynx-ai/zlynx/issues"
+Documentation = "https://zlynx-ai.github.io/zlynx"
 
 [build-system]
 requires = ["setuptools>=65.0", "wheel"]
