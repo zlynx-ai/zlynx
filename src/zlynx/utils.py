@@ -8,12 +8,6 @@ def get_act_fn(act):
     return getattr(jax.nn, act)
 
 
-def get_dtype(dtype):
-    if callable(dtype) or not isinstance(dtype, str):
-        return dtype
-    return getattr(jnp, dtype)
-
-
 def count_params(model) -> int:
     """Count total number of parameters in a model."""
     _, state = nnx.split(model)

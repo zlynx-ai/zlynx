@@ -3,8 +3,8 @@ import jax.numpy as jnp
 from flax import nnx
 import pytest
 
-from zlynx.models.dit.config import DiTConfig
-from zlynx.models.dit.model import DiT
+from zlynx.model.dit.config import DiTConfig
+from zlynx.model.dit.model import DiT
 
 def test_dit_forward():
     print("\n=== Testing DiT Forward Pass ===")

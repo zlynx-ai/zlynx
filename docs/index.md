@@ -2,8 +2,6 @@
 
 Complete API documentation for the Zlynx framework.
 
----
-
 ## Trainer
 
 Training loop, configuration, optimizer utilities, loss functions, data pipeline, and logging.
@@ -31,8 +29,6 @@ trainer.train()
 
 **Key classes:** `Trainer`, `TrainerConfig`, `SFTConfig`, `GRPOConfig`, `DPOConfig`, `DSFTConfig`
 
----
-
 ## Modules
 
 Reusable building-block layers for constructing models in Flax NNX.
@@ -42,8 +38,6 @@ Reusable building-block layers for constructing models in Flax NNX.
 **Key classes:** `Attention`, `KVCache`, `MLP`, `RMSNorm`, `RotaryEmbedding`, `AdaLayerNormZero`, `TimestepEmbedder`, `PatchEmbed`
 
 **PEFT adapters:** `LoraLinear`, `DoraLinear`, `VeraLinear`, `LohaLinear`, `LokrLinear`, `AdaloraLinear`, `apply_peft`
-
----
 
 ## Models
 

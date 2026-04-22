@@ -1,0 +1,46 @@
+{
+  "model": "MLP",
+  "start_date": "2026-04-23 01:19:23.486248",
+  "end_date": "2026-04-23 01:19:25.545802",
+  "optimizer": "adamw",
+  "batch_size": 8,
+  "gradient_accumulation_steps": 1,
+  "learning_rate": 0.001,
+  "lr_scheduler": "cosine",
+  "warmup_steps": 0,
+  "warmup_ratio": 0.0,
+  "max_steps": -1,
+  "num_epochs": 3,
+  "remat": false,
+  "sharding": false,
+  "steps": {
+    "10": {
+      "loss": 0.565071702003479,
+      "learning_rate": 0.0008966766763478518,
+      "epoch": 0.625,
+      "grad_norm": 1.4229909181594849,
+      "steps_per_sec": 6.137882197787918
+    },
+    "20": {
+      "loss": 0.7109650373458862,
+      "learning_rate": 0.0006294095073826611,
+      "epoch": 1.25,
+      "grad_norm": 1.7601035833358765,
+      "steps_per_sec": 128.31993832278354
+    },
+    "30": {
+      "loss": 0.6041033267974854,
+      "learning_rate": 0.0003086583164986223,
+      "epoch": 1.875,
+      "grad_norm": 2.570941209793091,
+      "steps_per_sec": 219.1209675312802
+    },
+    "40": {
+      "loss": 0.7822415232658386,
+      "learning_rate": 6.698724610032514e-05,
+      "epoch": 2.5,
+      "grad_norm": 1.7408812046051025,
+      "steps_per_sec": 123.43158489499953
+    }
+  }
+}

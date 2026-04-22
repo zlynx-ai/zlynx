@@ -6,7 +6,7 @@ import jax
 import jax.numpy as jnp
 import optax
 
-from zlynx.models.llama import LlamaConfig, LlamaLanguageModel
+from zlynx.model.llama import LlamaConfig, LlamaLanguageModel
 from zlynx.trainer.trainer import Trainer, TrainerConfig
 from zlynx.trainer.dataset import DatasetConfig
 

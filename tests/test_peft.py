@@ -1,8 +1,8 @@
 import jax
 import jax.numpy as jnp
 from flax import nnx
-from zlynx.models.llama import LlamaConfig, LlamaLanguageModel
-from zlynx.modules.peft import apply_peft, LoraLinear, DoraLinear
+from zlynx.model.llama import LlamaConfig, LlamaLanguageModel
+from zlynx.module.peft import apply_peft, LoraLinear, DoraLinear
 
 def test_lora():
     print("=== Testing LoRA ===")
@@ -75,7 +75,7 @@ def test_vera():
     model = LlamaLanguageModel(config, key=jax.random.key(2))
     
     print("Applying VeRA to o_proj and down_proj...")
-    from zlynx.modules.peft import VeraLinear
+    from zlynx.module.peft import VeraLinear
     model = apply_peft(model, method="vera", r=4, alpha=8, target_modules=["o_proj", "down_proj"])
     
     assert isinstance(model.model.blocks[0].self_attention.o_proj, VeraLinear)
@@ -99,7 +99,7 @@ def test_loha():
     model = LlamaLanguageModel(config, key=jax.random.key(3))
     
     print("Applying LoHa to q_proj and v_proj...")
-    from zlynx.modules.peft import LohaLinear
+    from zlynx.module.peft import LohaLinear
     model = apply_peft(model, method="loha", r=4, alpha=8, target_modules=["q_proj", "v_proj"])
     
     assert isinstance(model.model.blocks[0].self_attention.q_proj, LohaLinear)
@@ -123,7 +123,7 @@ def test_lokr():
     model = LlamaLanguageModel(config, key=jax.random.key(4))
     
     print("Applying LoKr to gate_proj and up_proj...")
-    from zlynx.modules.peft import LokrLinear
+    from zlynx.module.peft import LokrLinear
     model = apply_peft(model, method="lokr", r=4, alpha=8, target_modules=["gate_proj", "up_proj"])
     
     assert isinstance(model.model.blocks[0].mlp.gate_proj, LokrLinear)
@@ -146,7 +146,7 @@ def test_adalora():
     model = LlamaLanguageModel(config, key=jax.random.key(5))
     
     print("Applying AdaLoRA to o_proj and down_proj...")
-    from zlynx.modules.peft import AdaloraLinear
+    from zlynx.module.peft import AdaloraLinear
     model = apply_peft(model, method="adalora", r=4, alpha=8, target_modules=["o_proj", "down_proj"])
     
     assert isinstance(model.model.blocks[0].self_attention.o_proj, AdaloraLinear)

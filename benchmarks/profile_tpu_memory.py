@@ -41,7 +41,7 @@ def report(label):
 
 
 # ── Config ──
-from zlynx.models.llama import LlamaConfig, LlamaLanguageModel
+from zlynx.model.llama import LlamaConfig, LlamaLanguageModel
 
 config = LlamaConfig(
     vocab_size=32000,

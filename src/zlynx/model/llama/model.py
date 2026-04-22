@@ -5,8 +5,8 @@ from flax import nnx
 
 from ...core.base import Z
 from ...core.inferences import LanguageModel
-from ...modules import MLP, Attention, RMSNorm, RotaryEmbedding
-from ...utils import get_dtype, get_act_fn
+from ...module import MLP, Attention, RMSNorm, RotaryEmbedding
+from ...utils import get_act_fn
 from .config import LlamaConfig
 
 
@@ -23,8 +23,8 @@ class LlamaTransformer(nnx.Module):
             config.kv_head,
             config.attention_bias,
             layer_idx,
-            dtype=get_dtype(config.dtype),
-            param_dtype=get_dtype(config.param_dtype),
+            dtype=config.dtype,
+            param_dtype=config.param_dtype,
         )
         self.mlp = MLP(
             mlp_key,
@@ -32,8 +32,8 @@ class LlamaTransformer(nnx.Module):
             config.intermediate_size,
             get_act_fn(config.act_fn),
             config.bias,
-            dtype=get_dtype(config.dtype),
-            param_dtype=get_dtype(config.param_dtype),
+            dtype=config.dtype,
+            param_dtype=config.param_dtype,
         )
         self.input_layernorm = RMSNorm(config.hidden_size, config.norm_eps)
         self.post_attention_layernorm = RMSNorm(config.hidden_size, config.norm_eps)
@@ -67,8 +67,8 @@ class Llama(nnx.Module):
         self.embed_tokens = nnx.Embed(
             config.vocab_size,
             config.hidden_size,
-            dtype=get_dtype(config.dtype),
-            param_dtype=get_dtype(config.param_dtype),
+            dtype=config.dtype,
+            param_dtype=config.param_dtype,
             rngs=nnx.Rngs(embedding_key),
         )
 
@@ -144,8 +144,8 @@ class LlamaLanguageModel(LanguageModel):
             config.hidden_size,
             config.vocab_size,
             use_bias=config.bias,
-            dtype=get_dtype(config.dtype),
-            param_dtype=get_dtype(config.param_dtype),
+            dtype=config.dtype,
+            param_dtype=config.param_dtype,
             rngs=nnx.Rngs(lm_head_key),
         )
 
