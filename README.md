@@ -1,8 +1,11 @@
 # Zlynx
 
+> [!CAUTION]
+> **Zlynx is currently an experimental library.** APIs are subject to change without notice. We recommend pinning versions for production use.
+
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/zlynx-ai/zlynx)
 
-A lightweight, highly-customizable deep learning library built on **JAX** and **Flax NNX**. Designed for researchers and developers who want fine-grained control over model architectures, training loops, and distributed setups without the bloat of massive frameworks.
+An experimental, lightweight deep learning library built on **JAX** and **Flax NNX**. It explores providing researchers and developers with fine-grained control over model architectures, training loops, and distributed setups.
 
 ## Install
 
@@ -10,36 +13,39 @@ A lightweight, highly-customizable deep learning library built on **JAX** and **
 uv pip install zlynx
 ```
 
-## Define & Load Models
+## Experimental Model Interface
+
+Zlynx introduces `Z` as an experimental base class for models, aiming to provide built-in utilities for saving, loading, and sharing model artifacts.
 
 ```python
+import jax
+from flax import nnx
 from zlynx import Z
 
-class MyModel(Z): ...
+class MyModel(Z):
+    def __init__(self, rngs: nnx.Rngs, in_features: int, hidden: int, out_features: int):
+        self.linear1 = nnx.Linear(in_features, hidden, rngs=rngs)
+        self.linear2 = nnx.Linear(hidden, out_features, rngs=rngs)
 
-# Load from HuggingFace
-model = MyModel.load_hf("username/my-model", format="safetensors")
+    def __call__(self, x):
+        x = jax.nn.relu(self.linear1(x))
+        return self.linear2(x)
 
-# Load from Kaggle
-model = MyModel.load_kaggle("username/my-model", sharding="fsdp")
+# Initialize
+model = MyModel(nnx.Rngs(42), in_features=784, hidden=256, out_features=10)
 
-# Load from local checkpoint
-model = MyModel.load("./checkpoint", key=jax.random.key(0))
+# Save & Load
+model.save("./my-model", format="safetensors")
+restored = MyModel.load("./my-model", rngs=nnx.Rngs(0), in_features=784, hidden=256, out_features=10)
+
+# Push to Hubs (Experimental)
+model.push_hf("username/my-model")
+model.push_kaggle("username/my-model")
 ```
 
-## Built-in Llama
+## Training
 
-```python
-from zlynx.models.llama import LlamaConfig, LlamaLanguageModel
-
-config = LlamaConfig(vocab_size=32000, hidden_size=512, num_hidden_layers=2)
-model = LlamaLanguageModel(config)
-
-# Generate
-output_ids = model.generate(input_ids, key=jax.random.key(0), max_new_tokens=128)
-```
-
-## Train
+The `Trainer` is designed to handle common tasks of the training loop, including optimization, checkpointing, and logging.
 
 ```python
 from zlynx.trainer import Trainer, TrainerConfig
@@ -52,7 +58,7 @@ trainer = Trainer(
         batch_size=32,
         learning_rate=5e-5,
         num_epochs=3,
-        sharding="auto",
+        sharding="auto", # Experimental sharding
     ),
 )
 trainer.train()
@@ -60,34 +66,34 @@ trainer.train()
 
 ## PEFT (LoRA, DoRA, VeRA, LoHa, LoKr, AdaLoRA)
 
-```python
-from zlynx.modules.peft import apply_peft
-
-model = apply_peft(model, method="lora", r=16, alpha=32, target_modules=["q_proj", "v_proj"])
-```
-
-## Save & Push
+Zlynx provides utilities to apply various parameter-efficient fine-tuning (PEFT) methods.
 
 ```python
-model.save("./my-model", format="safetensors")
-model.push_hf("username/my-model")
-model.push_kaggle("username/my-model")
+from zlynx.module.peft import apply_peft
+
+model = apply_peft(
+    model, 
+    method="lora", 
+    r=16, 
+    alpha=32, 
+    target_modules=["linear1", "linear2"]
+)
 ```
 
-## Features
+## Goals & Features
 
-- **Checkpointing** — Orbax + SafeTensors, HuggingFace Hub & Kaggle integration
-- **Training** — gradient accumulation, LR scheduling, multi-backend logging (W&B, TensorBoard)
-- **Sharding** — auto, DDP, FSDP with one config change
-- **PEFT** — 6 adapter methods via `apply_peft()`
-- **GaLore** — gradient low-rank projection for memory-efficient full fine-tuning
-- **Data** — Grain-based pipeline accepting lists, HF datasets, dicts, and iterables
-- **Modules** — Attention (GQA/MQA), MLP (SwiGLU), RMSNorm, RoPE, KV Cache, DiT blocks
+- **JAX + Flax NNX Integration** — Explores combining XLA speed with the flexible NNX module system.
+- **Checkpointing Utilities** — Experimental support for Orbax + SafeTensors, HuggingFace Hub, and Kaggle.
+- **Training Helpers** — Gradient accumulation, LR scheduling, and multi-backend logging.
+- **Sharding Support** — Initial support for transitioning between single-device and distributed (DDP, FSDP) training.
+- **PEFT Methods** — Implementation of 6 adapter methods via `apply_peft()`.
+- **GaLore** — Experimental gradient low-rank projection for memory-efficient fine-tuning.
 
 ## Documentation
 
-- [Getting Started](docs/tutorials/getting_started/01_installation.md)
-- [MNIST Tutorial](docs/tutorials/mnist.md)
-- [API Reference — Trainer](docs/api-references/trainer.md)
-- [API Reference — Modules](docs/api-references/modules.md)
-- [API Reference — Models](docs/api-references/models.md)
+For full guides and current API references, visit the [Documentation](./docs/index.md).
+
+- [Installation](./docs/getting-started/installation.md)
+- [Quick Start](./docs/getting-started/quick-start.md)
+- [MNIST Tutorial](./docs/examples/mnist.md)
+- [API Reference](./docs/api/index.md)
