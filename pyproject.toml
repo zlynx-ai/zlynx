@@ -65,7 +65,7 @@ cuda13-local = [
 Homepage = "https://github.com/zlynx-ai/zlynx"
 Repository = "https://github.com/zlynx-ai/zlynx"
 Issues = "https://github.com/zlynx-ai/zlynx/issues"
-Documentation = "https://zlynx-ai.github.io/zlynx"
+Documentation = "https://zlynx.vercel.app/"
 
 [build-system]
 requires = ["setuptools>=65.0", "wheel"]
