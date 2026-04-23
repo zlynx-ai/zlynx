@@ -9,8 +9,8 @@ export default defineConfig({
   cleanUrls: true,
   themeConfig: {
     nav: [
-      // { text: "Home", link: "/" },
-      { text: "Tutorials", link: "/tutorials/mnist" },
+      { text: "Getting Started", link: "/getting-started/" },
+      { text: "Examples", link: "/examples/" },
       { text: "API Reference", link: "/api/" },
       { text: "GitHub", link: GITHUB_URL }
     ],
