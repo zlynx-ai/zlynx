@@ -2,8 +2,6 @@
 
 Fine-tune large models by training only a tiny fraction of parameters. Zlynx implements 6 PEFT methods that seamlessly replace `nnx.Linear` layers with lightweight adapters.
 
----
-
 ## Quick Start
 
 ```python
@@ -20,8 +18,6 @@ model = apply_peft(
 ```
 
 That's it. The `q_proj` and `v_proj` layers are now `LoraLinear` wrappers. The base weights are frozen; only the low-rank adapter parameters are trained.
-
----
 
 ## How `apply_peft` Works
 
@@ -44,8 +40,6 @@ apply_peft(
 
 The `target_modules` uses substring matching — `"q_proj"` matches any attribute name containing `"q_proj"`.
 
----
-
 ## Available Methods
 
 ### LoRA — Low-Rank Adaptation
@@ -64,8 +58,6 @@ model = apply_peft(model, method="lora", r=16, alpha=32, target_modules=["q_proj
 ```
 
 **Trainable params**: `2 × r × dim` per adapted layer
-
----
 
 ### DoRA — Weight-Decomposed Low-Rank Adaptation
 
@@ -86,8 +78,6 @@ model = apply_peft(model, method="dora", r=16, alpha=32, target_modules=["q_proj
 
 **Trainable params**: `2 × r × dim + out_features` per layer
 
----
-
 ### VeRA — Vector-based Random Adaptation
 
 Extreme parameter reduction. The A and B matrices are **randomly initialized and frozen** — only tiny scaling vectors `d` and `b` are trained.
@@ -106,8 +96,6 @@ model = apply_peft(model, method="vera", r=16, alpha=32, target_modules=["q_proj
 ```
 
 **Trainable params**: `r + out_features` per layer — dramatically fewer than LoRA
-
----
 
 ### LoHa — Hadamard Product Adaptation
 
@@ -128,8 +116,6 @@ model = apply_peft(model, method="loha", r=16, alpha=32, target_modules=["q_proj
 
 **Trainable params**: `4 × r × dim` per layer (2× LoRA, but much more expressive)
 
----
-
 ### LoKr — Kronecker Product Adaptation
 
 Uses the Kronecker product of a learnable low-rank matrix and a random matrix:
@@ -145,8 +131,6 @@ output = (x @ W_frozen) + (x @ ΔW) × (α/r)
 ```python
 model = apply_peft(model, method="lokr", r=16, alpha=32, target_modules=["q_proj", "v_proj"])
 ```
-
----
 
 ### AdaLoRA — Adaptive Low-Rank Adaptation
 
@@ -164,8 +148,6 @@ output = (x @ W_frozen) + (x @ P @ diag(E) @ Q) × (α/r)
 model = apply_peft(model, method="adalora", r=16, alpha=32, target_modules=["q_proj", "v_proj"])
 ```
 
----
-
 ## Choosing a Method
 
 | Method      | Trainable Params | Expressiveness | Best for                                        |
@@ -178,8 +160,6 @@ model = apply_peft(model, method="adalora", r=16, alpha=32, target_modules=["q_p
 | **AdaLoRA** | Medium           | Good           | When optimal rank is unknown (adaptive pruning) |
 
 **Default recommendation:** Start with **LoRA** (`r=16`, `alpha=32`). If quality isn't sufficient, try **DoRA**.
-
----
 
 ## Choosing `target_modules`
 
@@ -198,8 +178,6 @@ target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj"
 
 More target modules = more trainable parameters = better quality but slower training and more memory.
 
----
-
 ## Choosing Rank (`r`) and Alpha (`α`)
 
 - **Rank `r`**: Controls the size of the low-rank matrices. Higher = more capacity but more parameters.
@@ -209,8 +187,6 @@ More target modules = more trainable parameters = better quality but slower trai
 - **Alpha `α`**: Scaling factor. The adapter output is scaled by `α / r`.
   - Rule of thumb: set `alpha = 2 × r` (e.g. `r=16, alpha=32`)
   - Higher alpha = stronger adapter influence
-
----
 
 ## Full Example
 
@@ -251,8 +227,10 @@ trainer.train()
 model.save("./peft_checkpoint")
 ```
 
----
-
 ## Next Steps
 
-Learn about the [GaLore Optimizer](./02_galore.md) for memory-efficient full-parameter training.
+Related pages:
+
+- [GaLore](./galore.md) — memory-efficient full-parameter training
+- [Sharding](./sharding.md) — multi-device execution and placement
+- [Logging Backend](./logging-backend.md) — optional experiment logging integrations

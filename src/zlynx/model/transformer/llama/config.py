@@ -1,12 +1,9 @@
-
-
-
 import jax
 import jax.numpy as jnp
 from flax import struct
-from typing_extensions import Callable
 
 from ....core.config.config import Config
+
 
 @struct.dataclass
 class LlamaConfig(Config):

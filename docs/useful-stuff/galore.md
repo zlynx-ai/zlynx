@@ -2,8 +2,6 @@
 
 Reduce optimizer memory by up to 65% using Gradient Low-Rank Projection — without sacrificing model quality.
 
----
-
 ## The Problem
 
 Standard AdamW stores **two momentum buffers** (first and second moment) for every parameter. For a 7B parameter model in float32, that's:
@@ -15,8 +13,6 @@ Total:           84 GB just for parameters + optimizer
 ```
 
 GaLore solves this by projecting gradients into a low-rank subspace **before** they enter the optimizer. The optimizer only needs to track moments for the projected (much smaller) gradients.
-
----
 
 ## Quick Start
 
@@ -37,8 +33,6 @@ config = TrainerConfig(
 ```
 
 That's it. The Trainer wraps AdamW with GaLore automatically.
-
----
 
 ## How It Works
 
@@ -69,8 +63,6 @@ For a weight matrix of shape `(m, n)`:
 
 With `r = 128` and a `(4096, 4096)` weight: **32× memory reduction** for optimizer states on that layer.
 
----
-
 ## Configuration Options
 
 | Option                   | Default | Description                                                              |
@@ -92,8 +84,6 @@ The projection is only applied to 2D+ tensors (weight matrices). Parameters with
 - **`200`** — good default. SVD is expensive, so doing it every step would be slow
 - **`100`** — more frequent updates, better quality but slower
 - **`500`** — less frequent, faster training but projections may get stale
-
----
 
 ## Full Example
 
@@ -118,7 +108,6 @@ trconfig = TrainerConfig(
         "galore_scale": 1.0,
     },
     sharding="fsdp",
-    log_to=["wandb"],
     processing_train_dataset_fn=preprocess,
 )
 
@@ -130,8 +119,6 @@ trainer = Trainer(
 )
 trainer.train()
 ```
-
----
 
 ## GaLore vs PEFT
 
@@ -151,9 +138,11 @@ These are complementary techniques that solve different problems:
 
 **Use both when**: You're applying PEFT but even the adapter optimizer states are too large (very constrained hardware).
 
----
-
 ## Next Steps
 
-- Go back to the [Getting Started](../getting_started/01_installation.md) series
-- Try the [MNIST Tutorial](../mnist.md) for a complete end-to-end example
+Related pages:
+
+- [PEFT](./peft.md) — parameter-efficient fine-tuning methods
+- [Sharding](./sharding.md) — multi-device execution and placement
+- [Logging Backend](./logging-backend.md) — optional experiment logging integrations
+- [MNIST](../examples/mnist.md) — complete end-to-end example

@@ -4,6 +4,7 @@ v0.1.10
 - `batch_size` -> `batch_size`
 - `eval_batch_size` -> `eval_batch_size`
 - removed `mesh_shape`
-- add model `Gemma4LanguageModel` (incompleted)
-- improve galore
+- add more in `model` (incompleted)
+- improve `galore`
 - improve `Trainer`
+- improve document

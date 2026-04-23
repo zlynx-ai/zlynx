@@ -10,7 +10,7 @@ import types
 from typing import Dict
 
 from .trainer_config import TrainerConfig
-from .data import grain_from_source
+from .data import grain_from_source, ColumnarDictDataset
 from ..utils import param_bytes
 
 def apply_remat(model, *, skip_root=True):
@@ -216,7 +216,7 @@ def load_source(dataset, config: TrainerConfig | None = None, is_eval=False):
             )
 
     elif isinstance(dataset, Dict):
-        dataset = datasets.Dataset.from_dict(dataset)
+        dataset = ColumnarDictDataset(dataset)
 
     return dataset
 
@@ -263,4 +263,3 @@ def process_dataset(dataset, config: TrainerConfig, is_eval=False):
     )
 
     return pipeline, num_examples
-

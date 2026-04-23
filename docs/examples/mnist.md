@@ -10,8 +10,6 @@ A step-by-step guide to training a CNN on the MNIST handwritten digit dataset us
 > - Configuring `TrainerConfig`
 > - Running training, evaluating accuracy, and saving/loading checkpoints
 
----
-
 ## Prerequisites
 
 ```bash
@@ -21,9 +19,7 @@ uv pip install zlynx torchvision
 > [!NOTE]
 > Torchvision is only used to download MNIST. Zlynx has **no dependency on PyTorch**.
 
----
-
-## 1 — Imports
+## Imports
 
 ```python
 import jax
@@ -46,17 +42,11 @@ from zlynx.trainer import Trainer, TrainerConfig
 | `Z`                         | Zlynx base model — adds `save()` and `load()`             |
 | `Trainer` / `TrainerConfig` | Turn-key training loop with logging & checkpointing       |
 
----
-
-## 2 — Define the Model
+## Define the Model
 
 ```python
 class CNNClassifier(Z):
-    def __init__(self, key, num_classes: int = 10):
-        super().__init__()
-
-        # Split random key for each layer
-        conv1_key, conv2_key, fc_key = jax.random.split(key, 3)
+    def __init__(self, rngs: nnx.Rngs, num_classes: int = 10):
 
         # Conv block 1:  28×28×1 → 26×26×32 → 13×13×32
         self.conv1 = nnx.Conv(
@@ -64,7 +54,7 @@ class CNNClassifier(Z):
             out_features=32,
             kernel_size=(3, 3),
             padding="VALID",
-            rngs=nnx.Rngs(conv1_key),
+            rngs=rngs,
         )
 
         # Conv block 2:  13×13×32 → 11×11×64 → 5×5×64
@@ -73,14 +63,14 @@ class CNNClassifier(Z):
             out_features=64,
             kernel_size=(3, 3),
             padding="VALID",
-            rngs=nnx.Rngs(conv2_key),
+            rngs=rngs,
         )
 
         # Classifier head:  5×5×64 = 1600 → num_classes
         self.fc = nnx.Linear(
             in_features=64 * 5 * 5,
             out_features=num_classes,
-            rngs=nnx.Rngs(fc_key),
+            rngs=rngs,
         )
 
     def __call__(self, x: jax.Array) -> jax.Array:
@@ -98,12 +88,10 @@ class CNNClassifier(Z):
 **Key points:**
 
 - Inherit from **`Z`** to get `save()` / `load()` for free. Only the outermost model needs `Z` — inner layers like `nnx.Conv` are plain Flax modules.
-- We use **`jax.random.split`** to create separate random keys for each layer, then wrap each with `nnx.Rngs(...)` for Flax NNX.
+- We pass a shared **`nnx.Rngs(...)`** object into the model and let Flax NNX manage parameter RNG streams internally.
 - The forward pass: **Conv → ReLU → MaxPool → Conv → ReLU → MaxPool → Flatten → Linear**.
 
----
-
-## 3 — Load MNIST
+## Load MNIST
 
 ```python
 print("Loading MNIST dataset …")
@@ -120,9 +108,7 @@ y_test  = np.array(test_ds.targets.numpy())             # (10000,)
 print(f"Train: {len(x_train)} | Test: {len(x_test)}")
 ```
 
----
-
-## 4 — Prepare the Dataset for Zlynx
+## Prepare the Dataset
 
 Zlynx wraps datasets with [**Google Grain**](https://github.com/google/grain) for high-performance batching and shuffling. The simplest input format is a **list of dicts**:
 
@@ -141,9 +127,7 @@ Each element is a `dict` with:
 > [!TIP]
 > You can also pass a Hugging Face `datasets.Dataset`, a local dataset path string, or a plain Python `dict` of arrays.
 
----
-
-## 5 — Define Preprocessing
+## Define Preprocessing
 
 The `processing_train_dataset_fn` in `TrainerConfig` is called on **each batch** before it reaches the loss function:
 
@@ -155,9 +139,7 @@ def preprocess(batch):
     return {"image": image, "label": label}
 ```
 
----
-
-## 6 — Define the Loss Function
+## Define the Loss Function
 
 The Trainer expects a callable with signature `(model, batch) → scalar`. By the time it reaches the loss function, data **has** been batched by Grain:
 
@@ -172,22 +154,16 @@ def loss_fn(model, batch):
 > [!IMPORTANT]
 > The loss function is **JIT-compiled** under the hood. Avoid Python side effects like `print()` or list mutations inside it.
 
----
-
-## 7 — Create the Model
+## Create the Model
 
 ```python
-key = jax.random.key(42)
-model_key, _ = jax.random.split(key)
-
-model = CNNClassifier(model_key, num_classes=10)
+rngs = nnx.Rngs(42)
+model = CNNClassifier(rngs, num_classes=10)
 ```
 
-JAX requires explicit PRNG keys for reproducibility. We split a key and pass one to the model constructor.
+Flax NNX uses `nnx.Rngs(...)` to manage parameter initialization streams.
 
----
-
-## 8 — Configure the Trainer
+## Configure the Trainer
 
 ```python
 config = TrainerConfig(
@@ -225,9 +201,7 @@ config = TrainerConfig(
 | `logging_fn`                  | `None`       | Custom metrics, e.g. `{"ppl": lambda **kw: jnp.exp(kw["loss"])}`   |
 | `processing_train_dataset_fn` | `None`       | Per-batch preprocessing function                                   |
 
----
-
-## 9 — Train
+## Train
 
 ```python
 trainer = Trainer(
@@ -243,16 +217,33 @@ trainer.train()
 
 Expected output:
 
-```
-step 100 | loss: 0.6132 | step: 100 | epoch: 0 | steps_per_sec: 7.39
-step 200 | loss: 0.1854 | step: 200 | epoch: 0 | steps_per_sec: 8.12
+```bash
+════════════════════════════ Zlynx ═════════════════════════════
+Model            : CNNClassifier
+Parameters       : 104.65K total | 104.65K trainable
+Devices          : 1 x cpu
+Sharding         : False
+Remat            : disabled
+
+Batch size       : 64
+Grad accum       : 1
+Effective batch  : 64
+
+Optimizer        : adamw
+Learning rate    : 1.00e-03
+Scheduler        : cosine
+Epochs           : 3
+Max steps        : 2811
+
+Output dir       : ./output
+════════════════════════════════════════════════════════════════
+{'step': 100, 'loss': 0.6132, 'learning_rate': '9.6571e-04', 'epoch': 0.1067, 'grad_norm': 1.8421, 'steps_per_sec': 7.39}
+{'step': 200, 'loss': 0.1854, 'learning_rate': '8.6897e-04', 'epoch': 0.2134, 'grad_norm': 1.2215, 'steps_per_sec': 8.12}
 ...
-training complete — 2814 steps | saved → ./output
+training complete — 2811 steps | saved → ./output
 ```
 
----
-
-## 10 — Evaluate
+## Evaluate
 
 After training, measure accuracy on the test set:
 
@@ -284,9 +275,7 @@ print(f"Test accuracy: {accuracy:.4f}")
 > print(f"Test accuracy: {correct / total:.4f}")
 > ```
 
----
-
-## 11 — Save & Load the Model
+## Save & Load the Model
 
 ### Manual Save
 
@@ -302,42 +291,37 @@ Because Flax NNX needs to reconstruct the model structure before loading weights
 ```python
 model = CNNClassifier.load(
     "./my_mnist_model",
-    key=jax.random.key(0),    # any key will do — weights get overwritten
+    rngs=nnx.Rngs(0),    # any rngs will do — weights get overwritten
     num_classes=10,
 )
 ```
 
 > [!NOTE]
-> The `key` argument can be any key — it's only used to initialize the model skeleton so Orbax knows what shapes to load. The saved weights overwrite everything.
+> The `rngs` argument can be any RNG source — it's only used to initialize the model skeleton so Orbax knows what shapes to load. The saved weights overwrite everything.
 
 ### Loading a Trainer Checkpoint
 
 The Trainer saves checkpoints with Orbax's `CheckpointManager` in this structure:
 
 ```
-output/checkpoints/
+output/
 ├── 500/
-│   └── default/
-│       └── ...          ← weight files
+│   └── ...          ← weight files
 ├── 1000/
-│   └── default/
-│       └── ...
-└── 2814/               ← final checkpoint
-    └── default/
-        └── ...
+│   └── ...
+└── 2811/            ← final checkpoint
+    └── ...
 ```
 
 To load a specific checkpoint:
 
 ```python
 model = CNNClassifier.load(
-    "./output/checkpoints/2814/default",
-    key=jax.random.key(0),
+    "./output/2811",
+    rngs=nnx.Rngs(0),
     num_classes=10,
 )
 ```
-
----
 
 ## Full Script
 
@@ -358,12 +342,10 @@ from zlynx.trainer import Trainer, TrainerConfig
 
 # ── Model ────────────────────────────────────────────────────
 class CNNClassifier(Z):
-    def __init__(self, key, num_classes: int = 10):
-        super().__init__()
-        k1, k2, k3 = jax.random.split(key, 3)
-        self.conv1 = nnx.Conv(1, 32, kernel_size=(3, 3), padding="VALID", rngs=nnx.Rngs(k1))
-        self.conv2 = nnx.Conv(32, 64, kernel_size=(3, 3), padding="VALID", rngs=nnx.Rngs(k2))
-        self.fc    = nnx.Linear(64 * 5 * 5, num_classes, rngs=nnx.Rngs(k3))
+    def __init__(self, rngs: nnx.Rngs, num_classes: int = 10):
+        self.conv1 = nnx.Conv(1, 32, kernel_size=(3, 3), padding="VALID", rngs=rngs)
+        self.conv2 = nnx.Conv(32, 64, kernel_size=(3, 3), padding="VALID", rngs=rngs)
+        self.fc    = nnx.Linear(64 * 5 * 5, num_classes, rngs=rngs)
 
     def __call__(self, x):
         x = jax.nn.relu(self.conv1(x))
@@ -403,9 +385,8 @@ config = TrainerConfig(
 )
 
 # ── Train ────────────────────────────────────────────────────
-key = jax.random.key(42)
-model_key, _ = jax.random.split(key)
-model = CNNClassifier(model_key, num_classes=10)
+rngs = nnx.Rngs(42)
+model = CNNClassifier(rngs, num_classes=10)
 
 trainer = Trainer(
     model=model, loss_fn=loss_fn,
@@ -429,8 +410,6 @@ model.save("./my_mnist_model")
 
 </details>
 
----
-
 ## What's Next?
 
 Now that you've trained your first model with Zlynx, try these:
@@ -438,8 +417,8 @@ Now that you've trained your first model with Zlynx, try these:
 - **Bigger architectures** — add more conv blocks, batch normalization, or residual connections
 - **Hyperparameter tuning** — experiment with `learning_rate`, `batch_size`, `lr_scheduler`, `warmup_steps`
 - **Multi-device training** — set `sharding="auto"` (or `"ddp"` / `"fsdp"`) to distribute across GPUs or TPUs
-- **PEFT fine-tuning** — apply LoRA, DoRA, VeRA, and more with `apply_peft()` from `zlynx.modules.peft`
+- **PEFT fine-tuning** — apply LoRA, DoRA, VeRA, and more with `apply_peft()` from `zlynx.module.peft`
 - **GaLore optimizer** — use `optimizer="galore_adamw"` to reduce optimizer memory via gradient low-rank projection
 - **Logging** — add `"wandb"` or `"tensorboard"` to `log_to` for richer experiment tracking
 
-Check out the [Advanced Tutorials](./advanced/01_peft.md) to dive deeper!
+Check out [Useful Stuff](../useful-stuff/) to dive deeper.

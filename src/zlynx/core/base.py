@@ -14,6 +14,7 @@ import shutil
 import tempfile
 import os
 import re
+import inspect
 from datetime import datetime
 
 from .ckpt import _load_safetensors, _save_safetensors, _save_ckpt, _load_ckpt
@@ -97,6 +98,19 @@ def _maybe_unpack_single_archive(path: Path) -> Path:
     return extract_dir
 
 
+def _caller_globals() -> dict[str, Any]:
+    frame = inspect.currentframe()
+    try:
+        frame = frame.f_back
+        while frame is not None:
+            if frame.f_code.co_filename != __file__:
+                return frame.f_globals
+            frame = frame.f_back
+        return {}
+    finally:
+        del frame
+
+
 class Z(nnx.Module):
     """
     # Z Class
@@ -154,6 +168,7 @@ class Z(nnx.Module):
     ) -> Any:
         
         path = Path(path).resolve()
+        caller_globals = _caller_globals()
 
         if not (path / "config.json").exists(): 
             return None
@@ -178,7 +193,7 @@ class Z(nnx.Module):
             
             # try user defined
             if config_class is None:
-                config_class = globals().get(config_class_name)
+                config_class = caller_globals.get(config_class_name)
 
         # still None return as C base config
         if config_class is None:
@@ -254,6 +269,7 @@ class Z(nnx.Module):
         """
 
         path = Path(path).resolve()
+        caller_globals = _caller_globals()
 
         config = cls.load_config(path, config_map=config_map)
 
@@ -269,6 +285,12 @@ class Z(nnx.Module):
             from .. import model
             arch = getattr(model, arch_name, None)
 
+            if arch is None:
+                arch = caller_globals.get(arch_name)
+
+            if arch is None:
+                raise ValueError("Could not determine model architecture.")
+
         else:
             # allow config = None
             arch = cls
@@ -276,10 +298,9 @@ class Z(nnx.Module):
         logging.info(f"{arch.__name__} model class obtained")
 
         if config is None:
-            model = nnx.eval_shape(lambda: arch(*args, **kwargs))
-            
+            model = arch(*args, **kwargs)
         else:
-            model = nnx.eval_shape(lambda: arch(config=config, *args, **kwargs))
+            model = arch(config=config, *args, **kwargs)
         
         gdef, state = nnx.split(model)
 

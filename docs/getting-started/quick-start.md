@@ -126,7 +126,7 @@ For a fuller walkthrough, see [Training](./training.md).
 
 You should see a training summary, periodic metric logs, and a final checkpoint message in the console.
 
-```terminal
+```bash
 ════════════════════════════ Zlynx ═════════════════════════════
 Model            : MLP
 Parameters       : 2.24K total | 2.24K trainable
@@ -146,11 +146,11 @@ Max steps        : 48
 
 Output dir       : ./output
 ════════════════════════════════════════════════════════════════
-{'step': 10, 'loss': 0.5651, 'learning_rate': '8.9668e-04', 'epoch': 0.625, 'grad_norm': 1.423, 'steps_per_sec': 5.9827}
-{'step': 20, 'loss': 0.711, 'learning_rate': '6.2941e-04', 'epoch': 1.25, 'grad_norm': 1.7601, 'steps_per_sec': 120.8998}
-{'step': 30, 'loss': 0.6041, 'learning_rate': '3.0866e-04', 'epoch': 1.875, 'grad_norm': 2.5709, 'steps_per_sec': 185.578}
-{'step': 40, 'loss': 0.7822, 'learning_rate': '6.6987e-05', 'epoch': 2.5, 'grad_norm': 1.7409, 'steps_per_sec': 121.2556}
-step 48/48: 100%|█████████████████████████████████████████████| 48/48 [00:01<00:00, 24.58it/s]
+{'step': 10, 'loss': 0.6934, 'learning_rate': '8.9668e-04', 'epoch': 0.625, 'grad_norm': 1.8421, 'steps_per_sec': 5.7312}
+{'step': 20, 'loss': 0.6712, 'learning_rate': '6.2941e-04', 'epoch': 1.25, 'grad_norm': 1.5038, 'steps_per_sec': 34.2285}
+{'step': 30, 'loss': 0.6489, 'learning_rate': '3.0866e-04', 'epoch': 1.875, 'grad_norm': 1.2876, 'steps_per_sec': 43.9174}
+{'step': 40, 'loss': 0.6331, 'learning_rate': '6.6987e-05', 'epoch': 2.5, 'grad_norm': 1.1142, 'steps_per_sec': 33.0841}
+step 48/48: 100%|█████████████████████████████████████████████| 48/48 [00:04<00:00, 10.65it/s]
 training complete — 48 steps | saved → ./output
 ```
 
@@ -181,5 +181,5 @@ For format options and checkpoint details, see [Checkpoint](./ckpt.md).
 - Read [Installation](./installation.md) for backend-specific setup
 - Read [Create a model](./create-a-model.md) for model structure patterns
 - Read [Training](./training.md) for the full trainer workflow
-- Read [Sharding](./sharding.md) if you want multi-device execution
-- Read [PEFT](./peft.md) and [GaLore](./galore.md) for parameter-efficient training
+- Read [Sharding](../useful-stuff/sharding.md) if you want multi-device execution
+- Read [PEFT](../useful-stuff/peft.md) and [GaLore](../useful-stuff/galore.md) for parameter-efficient training

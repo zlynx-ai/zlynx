@@ -94,6 +94,50 @@ class GeneralRandomAccessSource(grain.sources.RandomAccessDataSource):
         return f"{self.__class__.__name__}(len={len(self)})"
 
 
+class ColumnarDictDataset:
+    """
+    Lightweight random-access wrapper for column-oriented dict datasets.
+
+    Example:
+        {
+            "input": np.ndarray(shape=(N, ...)),
+            "target": np.ndarray(shape=(N,))
+        }
+
+    Each `__getitem__(i)` returns one sample:
+        {"input": input[i], "target": target[i]}
+    """
+
+    def __init__(self, data: Mapping[str, Any]):
+        if not data:
+            raise ValueError("Columnar dict dataset cannot be empty.")
+
+        lengths = {}
+        for key, value in data.items():
+            if not hasattr(value, "__len__"):
+                raise TypeError(
+                    f"Columnar dict dataset field {key!r} must support __len__."
+                )
+            lengths[key] = len(value)
+
+        unique_lengths = set(lengths.values())
+        if len(unique_lengths) != 1:
+            detail = ", ".join(f"{k}={v}" for k, v in lengths.items())
+            raise ValueError(
+                "All fields in a dict dataset must have the same leading length. "
+                f"Got: {detail}"
+            )
+
+        self._data = dict(data)
+        self._length = unique_lengths.pop()
+
+    def __len__(self) -> int:
+        return self._length
+
+    def __getitem__(self, index: int) -> dict[str, Any]:
+        return {key: value[index] for key, value in self._data.items()}
+
+
 class _GeneralIterator(grain.DatasetIterator):
     """
     Checkpointable iterator for iterable-only sources.
@@ -198,7 +242,6 @@ def grain_from_source(
     data: Any,
     *,
     adapter: Callable[[Any], Any] | None = None,
-    preprocess_fn: Optional[Callable] = None,
     dict_mode: str = "items",
     read_opts: grain.ReadOptions | None = None,
     batch_size: int | None = None,
@@ -219,8 +262,8 @@ def grain_from_source(
     """
     is_map = False
 
-    if isinstance(data, Dict):
-        data = datasets.Dataset.from_dict(data)
+    if isinstance(data, Mapping):
+        data = ColumnarDictDataset(data)
 
     if isinstance(data, Mapping):
         source = GeneralRandomAccessSource(

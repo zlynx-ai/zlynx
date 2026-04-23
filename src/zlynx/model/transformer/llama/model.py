@@ -1,15 +1,12 @@
-
 import jax
 import jax.numpy as jnp
 from flax import nnx
 
-from zlynx.module import MLP, Attention, RMSNorm, RotaryEmbedding
-from zlynx.core.base import Z
-
+from ...core.base import Z
+from ...core.inferences import LanguageModel
+from ...module import MLP, Attention, RMSNorm, RotaryEmbedding
+from ...utils import get_act_fn
 from .config import LlamaConfig
-from ....utils import get_act_fn
-from ....core.inferences import LanguageModel
-
 
 
 class LlamaTransformer(nnx.Module):
@@ -133,12 +130,13 @@ class Llama(nnx.Module):
         return self.layernorm(hidden_states), present_key_values
 
 
-class LlamaLanguageModel(LanguageModel, Z):
+class LlamaLanguageModel(LanguageModel):
     def __init__(
         self, config: LlamaConfig, key: jax.typing.ArrayLike = jax.random.key(42)
     ):
         nnx.Module.__init__(self)
         LanguageModel.__init__(self, config=config)
+
         model_key, lm_head_key = jax.random.split(key, 2)
         self.model = Llama(config=config, key=model_key)
         self.lm_head = nnx.Linear(
@@ -168,17 +166,14 @@ class LlamaLanguageModel(LanguageModel, Z):
 
         loss = None
         if labels is not None:
-            # Shift so that tokens < n predict n
             shift_logits = logits[..., :-1, :]
             shift_labels = labels[..., 1:]
 
-            # Use optax softmax cross entropy
             loss_all = optax.softmax_cross_entropy_with_integer_labels(
                 logits=shift_logits, labels=shift_labels
             )
 
             if attention_mask is not None:
-                # Discard padding tokens from the loss
                 shift_mask = attention_mask[..., 1:]
                 loss = jnp.sum(loss_all * shift_mask) / jnp.maximum(jnp.sum(shift_mask), 1)
             else:
@@ -187,6 +182,5 @@ class LlamaLanguageModel(LanguageModel, Z):
         return CausalLMOutput(
             loss=loss,
             logits=logits,
-            # hidden_states=hidden_states if getattr(self.config, "output_hidden_states", False) else None,
             past_key_values=present_key_values,
         )
