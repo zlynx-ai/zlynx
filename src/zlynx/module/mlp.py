@@ -8,33 +8,35 @@ from ..utils import get_act_fn
 
 class MLP(nnx.Module):
     def __init__(
-        self, key, 
+        self, 
         hidden_size: int, 
         intermediate_dize: int, 
-        act_fn=jax.nn.silu, 
-        bias: bool=False, 
-        dtype=jnp.bfloat16,
-        param_dtype=jnp.float32
+        *, rngs: nnx.Rngs,
+        act_fn = None, 
+        bias: bool = False, 
+        dtype = "bfloat16",
+        param_dtype = "float32"
     ):
-        super().__init__()
-        gate_key, up_key, down_key = jax.random.split(key, 3)
+        if act_fn is None:
+            act_fn = "silu"
+
         self.gate_proj = nnx.Linear(
             hidden_size, intermediate_dize, 
             use_bias=bias, dtype=dtype, 
             param_dtype=param_dtype,
-            rngs=nnx.Rngs(gate_key)
+            rngs=rngs
         )
         self.up_proj = nnx.Linear(
             hidden_size, intermediate_dize, 
             use_bias=bias, dtype=dtype, 
             param_dtype=param_dtype,
-            rngs=nnx.Rngs(up_key)
+            rngs=rngs
         )
         self.down_proj = nnx.Linear(
             intermediate_dize, hidden_size, 
             use_bias=bias, dtype=dtype, 
             param_dtype=param_dtype,
-            rngs=nnx.Rngs(down_key)
+            rngs=rngs
         )
         self.act_fn = get_act_fn(act_fn)
 

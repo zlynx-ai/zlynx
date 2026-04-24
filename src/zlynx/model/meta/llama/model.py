@@ -3,40 +3,42 @@ import jax
 import jax.numpy as jnp
 from flax import nnx
 
-from ...core.base import Z
-from ...core.inferences import LanguageModel
-from ...module import MLP, Attention, RMSNorm, RotaryEmbedding
-from ...utils import get_act_fn
+from ....core.inferences import LanguageModel
+from ....module import MLP, Attention, RMSNorm, RotaryEmbedding
+from ....module.block import create_block, call_block
 from .config import LlamaConfig
 
 
 class LlamaTransformer(nnx.Module):
-    def __init__(self, key, config: LlamaConfig, layer_idx: int | None = None):
-        super().__init__()
-        attention_key, mlp_key = jax.random.split(key, 2)
+    def __init__(self, config: LlamaConfig, *, rngs: nnx.Rngs, layer_idx: int | None = None):
+
+        hidden_size = config.hidden_size
+        intermediate_size = config.intermediate_size
+        attention_head = config.attention_head
+        head_dim = config.head_dim
+        kv_head = config.kv_head
+        attention_bias = config.attention_bias
+        dtype = config.dtype
+        param_dtype = config.param_dtype
+        act_fn = config.act_fn
+        bias = config.bias
+        norm_eps = config.norm_eps
 
         self.self_attention = Attention(
-            attention_key,
-            config.hidden_size,
-            config.attention_head,
-            config.head_dim,
-            config.kv_head,
-            config.attention_bias,
-            layer_idx,
-            dtype=config.dtype,
-            param_dtype=config.param_dtype,
+            hidden_size, attention_head,
+            head_dim, kv_head,
+            rngs = rngs, bias = attention_bias,
+            layer_idx = layer_idx, dtype=dtype,
+            param_dtype=param_dtype,
         )
         self.mlp = MLP(
-            mlp_key,
-            config.hidden_size,
-            config.intermediate_size,
-            get_act_fn(config.act_fn),
-            config.bias,
-            dtype=config.dtype,
-            param_dtype=config.param_dtype,
+            hidden_size, intermediate_size,
+            rngs = rngs, act_fn = act_fn,
+            bias = bias, dtype = dtype,
+            param_dtype = param_dtype,
         )
-        self.input_layernorm = RMSNorm(config.hidden_size, config.norm_eps)
-        self.post_attention_layernorm = RMSNorm(config.hidden_size, config.norm_eps)
+        self.input_layernorm = RMSNorm(hidden_size, norm_eps)
+        self.post_attention_layernorm = RMSNorm(hidden_size, norm_eps)
 
     def __call__(
         self,
@@ -60,35 +62,45 @@ class LlamaTransformer(nnx.Module):
 
 
 class Llama(nnx.Module):
-    def __init__(self, config: LlamaConfig, key):
-        super().__init__()
-        self.num_hidden_layers = config.num_hidden_layers
-        embedding_key, transformer_key = jax.random.split(key, 2)
+    def __init__(self, config: LlamaConfig,* , rngs: nnx.Rngs):
+        
+        vocab_size = config.vocab_size
+        hidden_size = config.hidden_size
+        num_hidden_layers = config.num_hidden_layers
+        dtype = config.dtype
+        param_dtype = config.param_dtype
+        norm_eps = config.norm_eps
+        base = config.rope_theta
+        head_dim = config.head_dim
+        max_position_embedding = config.max_position_embedding
+        rope_scaling = config.rope_scaling
+
         self.embed_tokens = nnx.Embed(
-            config.vocab_size,
-            config.hidden_size,
-            dtype=config.dtype,
-            param_dtype=config.param_dtype,
-            rngs=nnx.Rngs(embedding_key),
+            vocab_size,
+            hidden_size,
+            dtype=dtype,
+            param_dtype=param_dtype,
+            rngs=rngs,
         )
 
         self.rotary = RotaryEmbedding(
-            config.base,
-            config.head_dim,
-            config.max_position_embedding,
-            config.rope_scaling,
+            base,
+            head_dim,
+            max_position_embedding,
+            rope_scaling,
         )
 
-        self.layernorm = RMSNorm(config.hidden_size, config.norm_eps)
+        self.layernorm = RMSNorm(hidden_size, norm_eps)
 
-        self.blocks = nnx.List(
-            [
-                LlamaTransformer(key, config, layer_idx)
-                for layer_idx, key in enumerate(
-                    jax.random.split(transformer_key, config.num_hidden_layers)
-                )
-            ]
+        self.blocks = create_block(
+            num_hidden_layers, 
+            LlamaTransformer, 
+            module_args=(config,),
+            rngs=rngs,
+            in_axes=(0, 0),
+            layer_idx=jnp.arange(num_hidden_layers),
         )
+
 
     def __call__(
         self,
@@ -122,31 +134,34 @@ class Llama(nnx.Module):
         else:
             causal_mask = None
 
-        present_key_values = []
-        for idx, layer in enumerate(self.blocks[: self.num_hidden_layers]):
-            layer_past = past_key_values[idx] if past_key_values is not None else None
-            hidden_states, present_kv = layer(hidden_states, causal_mask, position_embedding, layer_past)
-            present_key_values.append(present_kv)
-
+        hidden_states, present_key_values = call_block(
+            self.blocks,
+            hidden_states,
+            module_args=(causal_mask, position_embedding, past_key_values),
+            return_aux=True,
+        )
         return self.layernorm(hidden_states), present_key_values
 
 
 class LlamaLanguageModel(LanguageModel):
     def __init__(
-        self, config: LlamaConfig, key: jax.typing.ArrayLike = jax.random.key(42)
+        self, config: LlamaConfig, *, 
+        rngs: nnx.Rngs = None
     ):
-        nnx.Module.__init__(self)
-        LanguageModel.__init__(self, config=config)
         
-        model_key, lm_head_key = jax.random.split(key, 2)
-        self.model = Llama(config=config, key=model_key)
+        self.set_config(config)
+        
+        if rngs is None:
+            rngs = nnx.Rngs(42)
+        
+        self.model = Llama(config, rngs=rngs)
         self.lm_head = nnx.Linear(
             config.hidden_size,
             config.vocab_size,
             use_bias=config.bias,
             dtype=config.dtype,
             param_dtype=config.param_dtype,
-            rngs=nnx.Rngs(lm_head_key),
+            rngs=rngs,
         )
 
     def __call__(
@@ -157,7 +172,7 @@ class LlamaLanguageModel(LanguageModel):
         labels: jax.Array | None = None,
         past_key_values: list | None = None,
     ):
-        from zlynx.core.outputs import CausalLMOutput
+        from ....core.outputs import CausalLMOutput
         import optax
 
         hidden_states, present_key_values = self.model(

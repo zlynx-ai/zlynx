@@ -38,17 +38,18 @@ def _load_safetensors(state: nnx.State, path: str, module_map: Optional[Dict] = 
                 if k_tuple in current_state_dict:
                     target_var = current_state_dict[k_tuple]
                     instance = type(target_var)
-                    
-                    sharding = getattr(target_var, "sharding", None) 
+                    is_variable = hasattr(target_var, "get_value")
+                    target_value = target_var.get_value() if is_variable else target_var
+                    sharding = getattr(target_value, "sharding", None)
                     
                     value = shard_data[k_str] 
                     
                     if sharding is not None:
-                        device_value = jax.device_put(instance(value), sharding)
+                        value = jax.device_put(value, sharding)
                     else:
-                        device_value = jax.device_put(instance(value))
+                        value = jax.device_put(value)
                         
-                    new_state.append((k_tuple, device_value))
+                    new_state.append((k_tuple, instance(value) if is_variable else value))
                 else:
                     not_found_some = True
                     print(f"{k_str} not found in this model.")
@@ -229,13 +230,15 @@ def _load_npz(state: nnx.State, path: str | Path, module_map: Optional[Dict] = N
         if k_tuple in current_state_dict:
             target_var = current_state_dict[k_tuple]
             instance = type(target_var)
-            sharding = getattr(target_var, "sharding", None)
+            is_variable = hasattr(target_var, "get_value")
+            target_value = target_var.get_value() if is_variable else target_var
+            sharding = getattr(target_value, "sharding", None)
             value = jnp.asarray(data[k_str])
             if sharding is not None:
-                device_value = jax.device_put(instance(value), sharding)
+                value = jax.device_put(value, sharding)
             else:
-                device_value = jax.device_put(instance(value))
-            new_state.append((k_tuple, device_value))
+                value = jax.device_put(value)
+            new_state.append((k_tuple, instance(value) if is_variable else value))
         else:
             not_found_some = True
             print(f"{k_str} not found in this model.")

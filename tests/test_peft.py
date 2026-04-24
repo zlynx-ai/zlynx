@@ -1,7 +1,7 @@
 import jax
 import jax.numpy as jnp
 from flax import nnx
-from zlynx.model.llama import LlamaConfig, LlamaLanguageModel
+from zlynx.model.meta.llama import LlamaConfig, LlamaLanguageModel
 from zlynx.module.peft import apply_peft, LoraLinear, DoraLinear
 
 def test_lora():

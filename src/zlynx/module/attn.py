@@ -7,17 +7,17 @@ from .rope import apply_rope
 
 class Attention(nnx.Module):
     def __init__(
-        self, key,
+        self, 
         hidden_size: int,
         attention_head: int,
         head_dim: int,
         kv_head: int | None = None,
+        *, rngs: nnx.Rngs,
         bias: bool = False,
         layer_idx: int | None = None,
         dtype=jnp.bfloat16,
         param_dtype=jnp.float32,
     ):
-        super().__init__()
         self.layer_idx = layer_idx
         self.dtype = dtype
 
@@ -26,14 +26,13 @@ class Attention(nnx.Module):
         self.head_dim = head_dim
         self.kv_head = kv_head
 
-        q_key, k_key, v_key, o_key = jax.random.split(key, 4)
         self.q_proj = nnx.Linear(
             hidden_size,
             attention_head * head_dim,
             use_bias=bias,
             dtype=dtype,
             param_dtype=param_dtype,
-            rngs=nnx.Rngs(q_key)
+            rngs=rngs
         )
         self.k_proj = nnx.Linear(
             hidden_size,
@@ -41,7 +40,7 @@ class Attention(nnx.Module):
             use_bias=bias,
             dtype=dtype,
             param_dtype=param_dtype,
-            rngs=nnx.Rngs(k_key)
+            rngs=rngs
         )
         self.v_proj = nnx.Linear(
             hidden_size,
@@ -49,7 +48,7 @@ class Attention(nnx.Module):
             use_bias=bias,
             dtype=dtype,
             param_dtype=param_dtype,
-            rngs=nnx.Rngs(v_key)
+            rngs=rngs
         )
         self.o_proj = nnx.Linear(
             # GQA
@@ -59,7 +58,7 @@ class Attention(nnx.Module):
             use_bias=bias,
             dtype=dtype,
             param_dtype=param_dtype,
-            rngs=nnx.Rngs(o_key)
+            rngs=rngs
         )
 
     def __call__(

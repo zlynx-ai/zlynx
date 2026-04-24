@@ -7,7 +7,7 @@ from flax import nnx
 import functools
 import jax, jax.numpy as jnp
 
-from ..base import PretrainedModel
+from ..base import Z
 
 
 @functools.partial(
@@ -64,11 +64,10 @@ def _decode_step(model, input_ids, attention_mask, position_ids, past_key_values
     return model(input_ids, attention_mask, position_ids, past_key_values=past_key_values)
 
 
-class LanguageModel(PretrainedModel):
-    def __init__(self, **kwargs):
-        super().__init__()
-        self.kwargs = kwargs
-        self.config = kwargs.get("config", None)
+class LanguageModel(Z):
+
+    def set_infer_config(self):
+        ...
 
     def generate(
         self,

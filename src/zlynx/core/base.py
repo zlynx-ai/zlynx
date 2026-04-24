@@ -4,7 +4,7 @@ from flax import nnx, serialization, struct
 from pathlib import Path
 from orbax import checkpoint as ocp
 from typing import Literal, List, Dict, Tuple, Set, Optional, Any
-from dataclasses import field
+from dataclasses import field, is_dataclass
 from importlib import import_module
 from importlib.metadata import PackageNotFoundError, version as installed_version
 import json
@@ -111,6 +111,45 @@ def _caller_globals() -> dict[str, Any]:
         del frame
 
 
+def _trace_safe_constructor_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
+    trace_kwargs = dict(kwargs)
+
+    for name, value in trace_kwargs.items():
+        if isinstance(value, nnx.Rngs):
+            trace_kwargs[name] = {
+                tag: {
+                    "key": stream.key.get_value(),
+                    "count": stream.count.get_value(),
+                }
+                for tag, stream in value.items()
+            }
+
+    return trace_kwargs
+
+
+def _materialize_trace_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
+    materialized = dict(kwargs)
+
+    for name, value in materialized.items():
+        if (
+            isinstance(value, dict)
+            and value
+            and all(
+                isinstance(stream, dict) and "key" in stream and "count" in stream
+                for stream in value.values()
+            )
+        ):
+            rngs = nnx.Rngs({
+                tag: stream["key"]
+                for tag, stream in value.items()
+            })
+            for tag, stream in value.items():
+                getattr(rngs, tag).count[...] = stream["count"]
+            materialized[name] = rngs
+
+    return materialized
+
+
 class Z(nnx.Module):
     """
     # Z Class
@@ -158,12 +197,20 @@ class Z(nnx.Module):
     - Requires `config` attribute for saving config
     - Auto-detects architecture when using `Z.load()` directly
     """
+    
+    def set_config(self, config: Dict[str, Any] | Any) -> None:
+        if not isinstance(config, dict) and not is_dataclass(config):
+            raise TypeError(
+                "`config` must be a dict or a dataclass instance."
+            )
+
+        self._config = config
 
     # return config
     @classmethod
     def load_config(
         cls, path: str | Path, 
-        asdict: bool = False, 
+        return_dict: bool = False, 
         config_map: Optional[Dict] = None
     ) -> Any:
         
@@ -179,11 +226,11 @@ class Z(nnx.Module):
         if config_map is not None:
             config_dict = {config_map[k] if k in config_map else k:v for k, v in config_dict.items()}
 
-        if asdict:
+        if return_dict:
             return config_dict
 
         config_class = None
-        config_class_name = config_dict.get("conf", None) 
+        config_class_name = config_dict.get("config_class", None) 
         
         if config_class_name is not None:
             from .. import model
@@ -211,6 +258,7 @@ class Z(nnx.Module):
         cls, path: str | Path, 
         *args,
         dtype: str | None=None, 
+        ignore_local_config: bool = False,
         config_map: Optional[Dict]=None,
         module_map: Optional[Dict]=None,
         sharding: int | str | None=None,
@@ -271,13 +319,15 @@ class Z(nnx.Module):
         path = Path(path).resolve()
         caller_globals = _caller_globals()
 
-        config = cls.load_config(path, config_map=config_map)
+        config = None
+        if not ignore_local_config:
+            config = cls.load_config(path, config_map=config_map)
 
         if cls is Z:
             
             arch_name = None
             if config is not None:
-                arch_name = getattr(config, "arch", None)
+                arch_name = getattr(config, "architecture", None)
                 
             if arch_name is None:
                 raise ValueError("Could not determine model architecture.")
@@ -298,9 +348,13 @@ class Z(nnx.Module):
         logging.info(f"{arch.__name__} model class obtained")
 
         if config is None:
-            model = arch(*args, **kwargs)
+            model = nnx.eval_shape(
+                lambda: arch(*args, **kwargs)
+            )
         else:
-            model = arch(config=config, *args, **kwargs)
+            model = nnx.eval_shape(
+                lambda: arch(config, *args, **kwargs)
+            )
         
         gdef, state = nnx.split(model)
 
@@ -360,7 +414,7 @@ class Z(nnx.Module):
             tmp_path = Path(tmp_dir)
 
             try:
-                config = getattr(self, "config", self.kwargs.get("config", None) if hasattr(self, "kwargs") else None)
+                config = getattr(self, "_config", None)
 
                 _save_ckpt(self, tmp_path, fmt=fmt, max_shard_size_gb=max_shard_size_gb)
 
@@ -581,8 +635,4 @@ class Z(nnx.Module):
             module_map=module_map,
             **kwargs
         )
-    
 
-class PretrainedModel(Z):
-    def __init__(self):
-        super().__init__()

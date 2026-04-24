@@ -7,8 +7,8 @@ from flax import struct
 
 @struct.dataclass
 class Config:
-    arch: str | None = None
-    conf: str | None = None
+    architecture: str | None = None
+    config_class: str | None = None
   
 
 @struct.dataclass

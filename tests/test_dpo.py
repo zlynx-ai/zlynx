@@ -2,7 +2,7 @@ import pytest
 import jax
 import jax.numpy as jnp
 import numpy as np
-from zlynx.model.llama import LlamaConfig, LlamaLanguageModel
+from zlynx.model.meta.llama import LlamaConfig, LlamaLanguageModel
 from zlynx.trainer.dpo import DPOTrainer, DPOConfig
 
 # Fake Processor class to mock a Hugging Face Tokenizer

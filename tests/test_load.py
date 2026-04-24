@@ -1,7 +1,7 @@
 import os
 import jax
 import jax.numpy as jnp
-from zlynx.model.llama import LlamaConfig, LlamaLanguageModel
+from zlynx.model.meta.llama import LlamaConfig, LlamaLanguageModel
 
 def test_load_mixed_precision():
     # 1. Create a model with bf16 for both and save it

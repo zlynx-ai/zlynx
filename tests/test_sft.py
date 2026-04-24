@@ -1,7 +1,7 @@
 import pytest
 import jax
 import jax.numpy as jnp
-from zlynx.model.llama import LlamaConfig, LlamaLanguageModel
+from zlynx.model.meta.llama import LlamaConfig, LlamaLanguageModel
 from zlynx.trainer.sft import SFTTrainer, SFTConfig
 from zlynx.trainer.dataset import DatasetConfig
 

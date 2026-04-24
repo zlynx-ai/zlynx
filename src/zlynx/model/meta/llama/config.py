@@ -6,12 +6,12 @@ import jax.numpy as jnp
 from flax import struct
 from typing_extensions import Callable
 
-from ...core.config.config import Config
+from ....core.config.config import Config
 
 @struct.dataclass
 class LlamaConfig(Config):
-    arch: str = "LlamaLanguageModel"
-    conf: str = "LlamaConfig"
+    architecture: str = "LlamaLanguageModel"
+    config_class: str = "LlamaConfig"
     vocab_size: int = 80000
     hidden_size: int = 1024
     intermediate_size: int = 2048
@@ -30,7 +30,7 @@ class LlamaConfig(Config):
     attention_bias: bool = False
 
     # rope
-    base: float = 10_000
+    rope_theta: float = 10_000
     original_max_position_embedding: int = 2048
     max_position_embedding: int = 2048
     rope_scaling: dict | None = None

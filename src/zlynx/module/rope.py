@@ -144,7 +144,8 @@ class RotaryEmbedding(nnx.Module):
     ):
         super().__init__()
         
-        self.original_max_position_embedding = rope_scaling.get("original_max_position_embedding", max_position_embedding) if rope_scaling else max_position_embedding
+        self.original_max_position_embedding = rope_scaling.get("original_max_position_embedding", max_position_embedding) \
+            if rope_scaling else max_position_embedding
         self.max_position_embedding = max_position_embedding
 
         init_rope_fn = self.rope_default_fn
