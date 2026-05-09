@@ -22,7 +22,7 @@ def test_galore():
         optimizer_kwargs={"galore_r": 4, "galore_update_proj_gap": 2} # Update proj every 2 steps
     )
     
-    opt = build_optimizer(config, total_steps=10)
+    opt, schedule = build_optimizer(config, total_steps=10)
     
     # 3. Init optimizer
     print("Initializing optimizer state...")

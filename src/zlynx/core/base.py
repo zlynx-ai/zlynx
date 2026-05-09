@@ -204,6 +204,7 @@ class Z(nnx.Module):
                 "`config` must be a dict or a dataclass instance."
             )
 
+        self.config = config
         self._config = config
 
     # return config
@@ -635,4 +636,3 @@ class Z(nnx.Module):
             module_map=module_map,
             **kwargs
         )
-
